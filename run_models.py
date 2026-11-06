@@ -13,8 +13,9 @@ import numpy as np
 
 from barrier import config as C
 from barrier import data as D
+from barrier import scanner as S
 from barrier import theory as T
-from barrier.models import GBMModel, calibrate_all, sample_moments
+from barrier.models import GBMModel, calibrate_all, rolling_entry_models, sample_moments
 
 RNG_SEED = 20240601
 N_CHECK = 2_000_000  # increments drawn per model to check calibration
@@ -141,8 +142,30 @@ def run_dataset(ds: C.Dataset, rng) -> None:
     out = {"dataset": ds.key, "data_quality": q,
            "config": {"train": ds.train, "test": ds.test, "dt": C.DT,
                       "b": C.B_LOG, "a": C.A_LOG, "jump_k": C.JUMP_K}}
-    out["train"] = report_period("2. TRAINING calibration (used for all predictions)",
+    out["train"] = report_period("2. TRAINING calibration (static split)",
                                  D.log_returns(train), rng)
+    r_full = D.log_returns(full)
+    ch0 = S.chain(S.scan(test, mode="close"), 0)
+    roll_list = rolling_entry_models(r_full, ch0.start)
+    hr(f"2b. ROLLING {C.ROLLING_YEARS}-year calibration across {len(ch0)} trade entries (out-of-sample)")
+    mus = [m["GBM"].mu for m in roll_list]
+    sigs = [m["GBM"].sigma for m in roll_list]
+    lams = [m["Merton"].lam for m in roll_list]
+    print(f"Entry 1 ({ch0.start.iloc[0].date()}): mu={mus[0]:+.4f}/yr  sigma={sigs[0]:.4f}/yr  lam={lams[0]:.2f}/yr")
+    print(f"Across {len(ch0)} entries: mean mu={np.mean(mus):+.4f} (range {min(mus):+.3f}..{max(mus):+.3f})  "
+          f"mean sigma={np.mean(sigs):.4f} ({min(sigs):.3f}..{max(sigs):.3f})  "
+          f"mean lam={np.mean(lams):.2f}/yr")
+    out["rolling"] = {
+        "window_days": C.ROLLING_DAYS,
+        "n_entries": len(ch0),
+        "entry_dates": [str(d.date()) for d in ch0.start],
+        "mu_mean": float(np.mean(mus)), "mu_min": float(min(mus)), "mu_max": float(max(mus)),
+        "sigma_mean": float(np.mean(sigs)), "sigma_min": float(min(sigs)), "sigma_max": float(max(sigs)),
+        "lam_mean": float(np.mean(lams)),
+        "entries": [{"date": str(d.date()), "mu": float(m["GBM"].mu), "nu": float(m["GBM"].nu),
+                     "sigma": float(m["GBM"].sigma), "lam": float(m["Merton"].lam)}
+                    for d, m in zip(ch0.start, roll_list)],
+    }
     out["test_oracle"] = report_period(
         "3. TEST-period calibration (ORACLE - diagnostics only, never used for predictions)",
         D.log_returns(test), rng)

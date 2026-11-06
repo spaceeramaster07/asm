@@ -389,6 +389,63 @@
       "ks_p_median_offsets": 0.4283235408413665,
       "ks_share_rejected_5pct": 0.0
     },
+    "rolling/RandomWalk": {
+      "p_win": 0.54756,
+      "p_ruin": 0.40788,
+      "p_timeout": 0.04456,
+      "tau_mean": 173.08082,
+      "tau_median": 135.0,
+      "tau_sd": 129.67600905901642,
+      "tau_p05": 29.0,
+      "tau_p95": 486.0,
+      "ret_mean_ruin": -0.09898031259033,
+      "ret_p01_ruin": -0.10423003813593756,
+      "win_in_ci": true,
+      "tau_in_ci": true,
+      "ruin_ret_in_ci": false,
+      "ks_D_chain0": 0.1832466666666666,
+      "ks_p_chain0": 0.75137321372397,
+      "ks_p_median_offsets": 0.1827975333423748,
+      "ks_share_rejected_5pct": 0.0
+    },
+    "rolling/GBM": {
+      "p_win": 0.55426,
+      "p_ruin": 0.3888,
+      "p_timeout": 0.05694,
+      "tau_mean": 186.9951,
+      "tau_median": 148.0,
+      "tau_sd": 135.33245247701626,
+      "tau_p05": 32.0,
+      "tau_p95": 504.0,
+      "ret_mean_ruin": -0.10542834981961839,
+      "ret_p01_ruin": -0.12062627454746289,
+      "win_in_ci": true,
+      "tau_in_ci": true,
+      "ruin_ret_in_ci": false,
+      "ks_D_chain0": 0.22428666666666658,
+      "ks_p_chain0": 0.5113029435139271,
+      "ks_p_median_offsets": 0.16582214170671372,
+      "ks_share_rejected_5pct": 0.0
+    },
+    "rolling/Merton": {
+      "p_win": 0.56678,
+      "p_ruin": 0.37062,
+      "p_timeout": 0.0626,
+      "tau_mean": 194.33306,
+      "tau_median": 157.0,
+      "tau_sd": 137.25711493889278,
+      "tau_p05": 31.0,
+      "tau_p95": 504.0,
+      "ret_mean_ruin": -0.11132589062636551,
+      "ret_p01_ruin": -0.17151625417169186,
+      "win_in_ci": true,
+      "tau_in_ci": true,
+      "ruin_ret_in_ci": true,
+      "ks_D_chain0": 0.2534066666666666,
+      "ks_p_chain0": 0.36196884664343243,
+      "ks_p_median_offsets": 0.18731857192424495,
+      "ks_share_rejected_5pct": 0.0
+    },
     "oracle/RandomWalk": {
       "p_win": 0.64816,
       "p_ruin": 0.31994,
@@ -452,6 +509,8 @@
     "mu_test": 0.1454515939832778,
     "sigma_train": 0.24186586601857576,
     "sigma_test": 0.164640837058001,
-    "mu_train_se": 0.08065752646648852
+    "mu_train_se": 0.08065752646648852,
+    "mu_rolling": 0.10428058865545357,
+    "sigma_rolling": 0.16624231122765679
   }
 }

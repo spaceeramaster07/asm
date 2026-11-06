@@ -242,3 +242,18 @@ def calibrate_all(r: pd.Series) -> dict:
         "GBM": GBMModel.calibrate(r),
         "Merton": MertonModel.calibrate(r),
     }
+
+
+def rolling_window_returns(full_returns: pd.Series, entry_date, window: int = C.ROLLING_DAYS) -> pd.Series:
+    """Trailing `window` daily log returns known at the Close of `entry_date`."""
+    return full_returns.loc[:entry_date].iloc[-window:]
+
+
+def calibrate_rolling_at(full_returns: pd.Series, entry_date, window: int = C.ROLLING_DAYS) -> dict:
+    """Calibrate all three models on the trailing `window` trading days up to `entry_date`."""
+    return calibrate_all(rolling_window_returns(full_returns, entry_date, window))
+
+
+def rolling_entry_models(full_returns: pd.Series, entry_dates, window: int = C.ROLLING_DAYS) -> list[dict]:
+    """List of calibrated model dicts, one per trade entry date."""
+    return [calibrate_rolling_at(full_returns, d, window) for d in entry_dates]

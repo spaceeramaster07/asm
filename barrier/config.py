@@ -75,6 +75,10 @@ BOOT_BLOCKS = (126, 252, 504)  # block lengths in start-days; 252 is the headlin
 BOOT_BLOCK_MAIN = 252
 CHAIN_OFFSETS = 60             # non-overlapping chain re-run from each of the first 60 days
 
+# Rolling calibration window (5 trading years before each trade entry in test period)
+ROLLING_YEARS = 5
+ROLLING_DAYS = ROLLING_YEARS * TRADING_DAYS
+
 # Step 4: tournament
 W0 = 100.0
 N_CAREERS = 2_000
@@ -83,5 +87,6 @@ LEVERAGE_CAP = 3.0
 FLAT_BET = 50.0
 FIXED_FRACTION = 0.50
 MARTINGALE_START = 0.25
+FRACTIONAL_KELLY_MULTS = (0.25, 0.50, 0.75, 1.00, 1.25, 1.50, 2.00)
 Q7_MULTIPLIERS = (0.5, 0.75, 1.0, 1.25, 1.5, 1.75, 2.0, 2.25, 2.5)
 Q7_UNCAPPED_MAX = 10.0         # leverage ceiling for the "no cap" Q7 variant

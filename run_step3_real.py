@@ -16,10 +16,10 @@ from barrier import engine as E
 from barrier import plotstyle as P
 from barrier import scanner as S
 from barrier import theory as T
-from barrier.models import calibrate_all
+from barrier.models import calibrate_all, rolling_entry_models
 
 MODELS = ("RandomWalk", "GBM", "Merton")
-PARAMS = ("train", "oracle")
+PARAMS = ("train", "rolling", "oracle")
 
 
 def model_episodes(ds) -> dict:
@@ -35,7 +35,7 @@ def inside(x, ci) -> bool:
 def run(ds) -> dict:
     print("\n" + "#" * 96 + f"\n#  {ds.label}: test period {ds.test[0]} -> {ds.test[1]}, "
           f"cap {C.CAP_DAYS} days\n" + "#" * 96)
-    _, train, test, _ = D.load(ds)
+    full, train, test, _ = D.load(ds)
     rng = np.random.default_rng([C.SEED, 3, len(ds.key)])
 
     out = {"dataset": ds.key, "cap": C.CAP_DAYS}
@@ -93,8 +93,12 @@ def run(ds) -> dict:
     gtrain = calibrate_all(D.log_returns(train))["GBM"]
     gtest_all = calibrate_all(D.log_returns(test))
     gtest = gtest_all["GBM"]
+    roll_seq = rolling_entry_models(D.log_returns(full), chains[0].start)
+    mu_roll = float(np.mean([m["GBM"].mu for m in roll_seq]))
+    sig_roll = float(np.mean([m["GBM"].sigma for m in roll_seq]))
     out["q2"] = {"mu_train": gtrain.mu, "mu_test": gtest.mu, "sigma_train": gtrain.sigma,
-                 "sigma_test": gtest.sigma, "mu_train_se": gtrain.nu_se}
+                 "sigma_test": gtest.sigma, "mu_train_se": gtrain.nu_se,
+                 "mu_rolling": mu_roll, "sigma_rolling": sig_roll}
 
     report(ds, out)
     plot_durations(ds, eps, chains, S.overlapping(scans["close"]), test, gtest_all["Merton"])
@@ -150,17 +154,21 @@ def ecdf(x):
 
 def plot_durations(ds, eps, chains, ov, test, mer_test) -> None:
     chain0 = chains[0]
-    fig = P.plt.figure(figsize=(11.8, 7.6), facecolor=P.SURFACE)
-    gs = fig.add_gridspec(2, 2, height_ratios=[1.25, 1.0], hspace=0.38, wspace=0.14)
+    fig = P.plt.figure(figsize=(14.4, 7.6), facecolor=P.SURFACE)
+    gs = fig.add_gridspec(2, 3, height_ratios=[1.25, 1.0], hspace=0.38, wspace=0.12)
     ax0 = fig.add_subplot(gs[0, 0])
     ax1 = fig.add_subplot(gs[0, 1], sharey=ax0)
+    ax2 = fig.add_subplot(gs[0, 2], sharey=ax0)
     ax_tl = fig.add_subplot(gs[1, :])
-    for ax in (ax0, ax1, ax_tl):
+    for ax in (ax0, ax1, ax2, ax_tl):
         P.style_ax(ax)
 
-    for ax, p, ttl in [(ax0, "train", "Models with training parameters (the forecast)"),
-                       (ax1, "oracle", "Models with test-period parameters (oracle)")]:
-        # 60 start-day offset chains envelope
+    panels = [
+        (ax0, "train", "Static training params (frozen at split)"),
+        (ax1, "rolling", f"Rolling {C.ROLLING_YEARS}-yr params (updated per trade, out-of-sample)"),
+        (ax2, "oracle", "Test-period params (oracle hindsight)"),
+    ]
+    for ax, p, ttl in panels:
         for idx_o, ch_o in chains.items():
             xo, yo = ecdf(ch_o.tau)
             ax.step(np.r_[0, xo], np.r_[0, yo], where="post", color="#c6c4be", lw=0.7, alpha=0.35,
@@ -178,15 +186,16 @@ def plot_durations(ds, eps, chains, ov, test, mer_test) -> None:
         P.pct_axis(ax.yaxis)
         P.titles(ax, ttl, "Trading days to exit (cap 504)",
                  "Share of trades finished" if p == "train" else None)
-        if p == "oracle":
+        if p != "train":
             ax.tick_params(labelleft=False)
+        if p == "rolling":
             sh30 = float(np.mean(chain0.tau <= 30))
             if sh30 >= 0.15:
                 ax.annotate(f"{sh30:.0%} of chain trades exit in <=30d\n(crisis clustering)",
                             xy=(30, sh30), xytext=(115, sh30 - 0.05),
                             color=P.INK, fontsize=8,
                             arrowprops=dict(arrowstyle="->", color=P.INK2, lw=0.9))
-    P.legend(ax0, loc="lower right", ncol=1)
+    P.legend(ax0, loc="lower right", ncol=1, fontsize=7.8)
 
     # Bottom panel: calendar timeline barcode / Gantt of sequential chain trades + 3-sigma jumps
     dates = test.index
@@ -251,11 +260,14 @@ def plot_sensitivity(ds, out) -> None:
     ax.axhspan(c[0], c[1], color=P.GRID, alpha=0.75, lw=0, label="real win rate, 95% CI")
     ax.axhline(pr, color=P.INK, lw=1.6, label=f"real win rate (resolved trades) {pr:.0%}")
 
-    # Plot markers at training forecast and oracle test point
+    # Plot markers at static training, rolling 5y mean, and oracle test point
     p_tr = T.gbm_first_passage_daily(q["mu_train"] - 0.5 * q["sigma_train"] ** 2, q["sigma_train"])[0]
+    p_ro = T.gbm_first_passage_daily(q["mu_rolling"] - 0.5 * q["sigma_rolling"] ** 2, q["sigma_rolling"])[0]
     p_te = T.gbm_first_passage_daily(q["mu_test"] - 0.5 * q["sigma_test"] ** 2, q["sigma_test"])[0]
     ax.plot(q["mu_train"], p_tr, "o", color=P.CAT[1], ms=7.5, mec=P.SURFACE, mew=1.5, zorder=5,
-            label=f"training forecast ({p_tr:.1%})")
+            label=f"static training ({p_tr:.1%})")
+    ax.plot(q["mu_rolling"], p_ro, "s", color=P.CAT[2], ms=7.5, mec=P.SURFACE, mew=1.5, zorder=6,
+            label=f"rolling {C.ROLLING_YEARS}y mean ({p_ro:.1%}, sig={q['sigma_rolling']:.1%})")
     ax.plot(q["mu_test"], p_te, "D", color=P.CAT[0], ms=7.0, mec=P.SURFACE, mew=1.5, zorder=5,
             label=f"oracle test point ({p_te:.1%})")
 
@@ -291,9 +303,12 @@ def plot_q4_overshoot(ds, eps, scans, chain0, out) -> None:
     ch_c = out["chain_close_offset0"]
     ci_win = ov_c["ci"][C.BOOT_BLOCK_MAIN]["p_win"]
     rows = [
-        ("Train: Random walk", out["models"]["train/RandomWalk"], False),
-        ("Train: GBM", out["models"]["train/GBM"], False),
-        ("Train: Merton", out["models"]["train/Merton"], False),
+        ("Static train: Random walk", out["models"]["train/RandomWalk"], False),
+        ("Static train: GBM", out["models"]["train/GBM"], False),
+        ("Static train: Merton", out["models"]["train/Merton"], False),
+        (f"Rolling {C.ROLLING_YEARS}y: Random walk", out["models"]["rolling/RandomWalk"], False),
+        (f"Rolling {C.ROLLING_YEARS}y: GBM", out["models"]["rolling/GBM"], False),
+        (f"Rolling {C.ROLLING_YEARS}y: Merton", out["models"]["rolling/Merton"], False),
         ("Oracle: Random walk", out["models"]["oracle/RandomWalk"], False),
         ("Oracle: GBM", out["models"]["oracle/GBM"], False),
         ("Oracle: Merton", out["models"]["oracle/Merton"], False),
@@ -334,9 +349,10 @@ def plot_q4_overshoot(ds, eps, scans, chain0, out) -> None:
     ov_close_df = S.overlapping(scans["close"])
     ov_intra_df = S.overlapping(scans["intraday"])
     ruin_series = [
-        ("Random walk (train)", np.expm1(eps[("train", "RandomWalk")].exit_log[eps[("train", "RandomWalk")].outcome == E.RUIN]), P.MODEL_COLOR["RandomWalk"]),
-        ("GBM (train)", np.expm1(eps[("train", "GBM")].exit_log[eps[("train", "GBM")].outcome == E.RUIN]), P.MODEL_COLOR["GBM"]),
-        ("Merton (train)", np.expm1(eps[("train", "Merton")].exit_log[eps[("train", "Merton")].outcome == E.RUIN]), P.MODEL_COLOR["Merton"]),
+        ("Random walk (rolling 5y)", np.expm1(eps[("rolling", "RandomWalk")].exit_log[eps[("rolling", "RandomWalk")].outcome == E.RUIN]), P.MODEL_COLOR["RandomWalk"]),
+        ("GBM (rolling 5y)", np.expm1(eps[("rolling", "GBM")].exit_log[eps[("rolling", "GBM")].outcome == E.RUIN]), P.MODEL_COLOR["GBM"]),
+        ("Merton (rolling 5y)", np.expm1(eps[("rolling", "Merton")].exit_log[eps[("rolling", "Merton")].outcome == E.RUIN]), P.MODEL_COLOR["Merton"]),
+        ("Merton (static train)", np.expm1(eps[("train", "Merton")].exit_log[eps[("train", "Merton")].outcome == E.RUIN]), "#20855a"),
         ("Real: Intraday + Open gaps", ov_intra_df[ov_intra_df.outcome == E.RUIN].ret.to_numpy(), "#6250d6"),
         ("Real: Daily Close", ov_close_df[ov_close_df.outcome == E.RUIN].ret.to_numpy(), P.INK),
     ][::-1]

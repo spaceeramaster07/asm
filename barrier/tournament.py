@@ -16,7 +16,7 @@ from dataclasses import dataclass
 import numpy as np
 
 from . import config as C
-from .engine import RUIN, TIMEOUT, WIN, sim_barriers
+from .engine import RUIN, TIMEOUT, WIN, apply_cap, sim_barriers, simulate
 
 
 # ------------------------------------------------------------------ Kelly
@@ -37,6 +37,12 @@ def kelly_fraction(R, T, rf, fmax: float = C.Q7_UNCAPPED_MAX, step: float = 0.00
     return float(fs[int(np.argmax(g))])
 
 
+def model_kelly_fraction(model, rf: float, rng, n_ep: int = 8_000) -> float:
+    """Out-of-sample Kelly fraction f* for a calibrated model by simulating n_ep episodes."""
+    ep = apply_cap(simulate(model, n_ep, rng), C.CAP_DAYS)
+    return kelly_fraction(np.expm1(ep.exit_log), ep.tau.astype(float), rf)
+
+
 def two_point_growth(p: float, fs: np.ndarray, G: float = 0.20, L: float = 0.10) -> np.ndarray:
     """Textbook g(f) = p ln(1 + fG) + (1 - p) ln(1 - fL): exact +20/-10, no cash, no overshoot."""
     with np.errstate(invalid="ignore", divide="ignore"):
@@ -47,17 +53,21 @@ def two_point_growth(p: float, fs: np.ndarray, G: float = 0.20, L: float = 0.10)
 @dataclass(frozen=True)
 class Strategy:
     name: str
-    kind: str          # "fraction" | "flat" | "martingale"
+    kind: str          # "fraction" | "rolling_kelly" | "flat" | "martingale"
     param: float = 0.0
     cap: float = C.LEVERAGE_CAP
 
 
-def standard_strategies(f_kelly: float) -> list[Strategy]:
+def standard_strategies(f_kelly_static: float, f_kelly_rolling_mean: float | None = None) -> list[Strategy]:
+    """Tournament strategies comparing Static Kelly (frozen training f*) against Rolling 5y Kelly
+    (re-calibrated before each trade round from the trailing 5-year window)."""
     return [
         Strategy("Flat Rs50", "flat", C.FLAT_BET),
         Strategy("Fixed 50%", "fraction", C.FIXED_FRACTION),
-        Strategy("Full Kelly", "fraction", min(f_kelly, C.LEVERAGE_CAP)),
-        Strategy("Half Kelly", "fraction", min(0.5 * f_kelly, C.LEVERAGE_CAP)),
+        Strategy("Static Kelly", "fraction", min(f_kelly_static, C.LEVERAGE_CAP)),
+        Strategy("Static Half Kelly", "fraction", min(0.5 * f_kelly_static, C.LEVERAGE_CAP)),
+        Strategy("Rolling Kelly", "rolling_kelly", 1.0, cap=C.LEVERAGE_CAP),
+        Strategy("Rolling Half Kelly", "rolling_kelly", 0.5, cap=C.LEVERAGE_CAP),
         Strategy("Martingale", "martingale", C.MARTINGALE_START),
         # In a continuous price path, re-entering 100% at each exit price == holding.
         Strategy("Buy & Hold", "fraction", 1.0),
@@ -81,10 +91,13 @@ class Book:
         self.days = np.zeros(n)
         self.k = 0
 
-    def notional(self, i: int) -> np.ndarray:
+    def notional(self, i: int, f_roll_round: float | None = None) -> np.ndarray:
         st, W = self.S[i], self.W[i]
         if st.kind == "fraction":
             N = st.param * W
+        elif st.kind == "rolling_kelly":
+            f_eff = min(st.param * (0.0 if f_roll_round is None else f_roll_round), st.cap)
+            N = f_eff * W
         elif st.kind == "flat":
             N = np.minimum(st.param, st.cap * W)
         else:
@@ -92,7 +105,7 @@ class Book:
         return np.where(self.bankrupt[i], 0.0, N)
 
     def play(self, P: np.ndarray, tau: np.ndarray, outcome: np.ndarray, rf: float,
-             rows: np.ndarray | None = None) -> None:
+             rows: np.ndarray | None = None, f_roll_round: float | None = None) -> None:
         """One round. P[r, t-1] = price ratio on day t of the episode (t = 1..L); columns
         beyond each row's tau are ignored. `rows` selects which careers play (default all)."""
         rows = np.arange(self.n) if rows is None else rows
@@ -103,7 +116,7 @@ class Book:
         r_idx = np.arange(len(rows))
         for i, st in enumerate(self.S):
             W = self.W[i, rows]
-            N = self.notional(i)[rows]
+            N = self.notional(i, f_roll_round=f_roll_round)[rows]
             path = W[:, None] + N[:, None] * (P - 1) + (W - N)[:, None] * rf * t / C.TRADING_DAYS
             path = np.where(valid, path, np.nan)
             broke = (np.nanmin(path, axis=1) <= 0) | self.bankrupt[i, rows]
@@ -133,26 +146,35 @@ class Book:
         self.days[rows] += 1
 
 
-def simulate_careers(model, strategies, n: int, K: int, rf: float, rng,
-                     cap: int = C.CAP_DAYS) -> Book:
-    """n independent careers of K rounds in a model world (same paths for every strategy)."""
-    a, b = sim_barriers(model)
+def simulate_careers(model_or_seq, strategies, n: int, K: int, rf: float, rng,
+                     cap: int = C.CAP_DAYS,
+                     f_rolling_seq: list[float] | np.ndarray | None = None) -> Book:
+    """n independent careers of K rounds in a model world (same paths for every strategy).
+    `model_or_seq` may be a single Model or a sequence of per-round rolling-calibrated Models.
+    `f_rolling_seq` gives the trader's rolling Kelly f*_k for each round k (cycled if K > len)."""
+    is_seq = isinstance(model_or_seq, (list, tuple))
     book = Book(strategies, n, K)
-    for _ in range(K):
-        X = np.cumsum(model.increments(rng, (n, cap)), axis=1)
+    for k in range(K):
+        mdl = model_or_seq[k % len(model_or_seq)] if is_seq else model_or_seq
+        a, b = sim_barriers(mdl)
+        f_rk = (float(f_rolling_seq[k % len(f_rolling_seq)])
+                if f_rolling_seq is not None and len(f_rolling_seq) > 0 else None)
+        X = np.cumsum(mdl.increments(rng, (n, cap)), axis=1)
         hit = (X >= b) | (X <= a)
         any_hit = hit.any(axis=1)
         j = np.where(any_hit, hit.argmax(axis=1), cap - 1)
         tau = j + 1
         xe = X[np.arange(n), j]
         outcome = np.where(any_hit, np.where(xe >= b, WIN, RUIN), TIMEOUT)
-        book.play(np.exp(X), tau, outcome, rf)
+        book.play(np.exp(X), tau, outcome, rf, f_roll_round=f_rk)
         book.next_round()
     return book
 
 
-def real_career(close: np.ndarray, chain, strategies, rf: float) -> Book:
-    """One real career along a non-overlapping chain of trades (Close-checked exits)."""
+def real_career(close: np.ndarray, chain, strategies, rf: float,
+                f_rolling_by_entry: dict[int, float] | None = None) -> Book:
+    """One real career along a non-overlapping chain of trades (Close-checked exits).
+    If `f_rolling_by_entry` is provided, maps `tr.entry_idx` -> rolling Kelly f*_k at that entry."""
     K = len(chain)
     book = Book(strategies, 1, K)
     prev_exit = None
@@ -161,7 +183,8 @@ def real_career(close: np.ndarray, chain, strategies, rf: float) -> Book:
             for _ in range(tr.entry_idx - prev_exit):
                 book.cash_day(rf)
         P = close[tr.entry_idx + 1: tr.exit_idx + 1][None, :] / close[tr.entry_idx]
-        book.play(P, np.array([tr.tau]), np.array([tr.outcome]), rf)
+        f_rk = f_rolling_by_entry.get(int(tr.entry_idx)) if f_rolling_by_entry is not None else None
+        book.play(P, np.array([tr.tau]), np.array([tr.outcome]), rf, f_roll_round=f_rk)
         book.next_round()
         prev_exit = tr.exit_idx
     return book
@@ -174,15 +197,22 @@ def buy_and_hold_real(close: np.ndarray, start: int, end: int) -> dict:
     return {"W": float(w[-1]), "mdd": float(np.max(1 - w / peak)), "days": int(end - start)}
 
 
-def metrics(book: Book) -> dict:
+def metrics(book: Book, f_rolling_mean: float | None = None) -> dict:
     """Leaderboard metrics per strategy."""
     out = {}
     yrs = np.maximum(book.days, 1) / C.TRADING_DAYS
     for i, st in enumerate(book.S):
         W = book.W[i]
         cagr = np.where(W > 0, (np.maximum(W, 1e-12) / C.W0) ** (1 / yrs) - 1, -1.0)
+        if st.kind == "flat":
+            f_rep = None
+        elif st.kind == "rolling_kelly":
+            f_rep = (min(st.param * f_rolling_mean, st.cap)
+                     if f_rolling_mean is not None else st.param)
+        else:
+            f_rep = st.param
         out[st.name] = {
-            "f": st.param if st.kind != "flat" else None,
+            "f": f_rep,
             "W_median": float(np.median(W)), "W_mean": float(np.mean(W)),
             "W_p05": float(np.percentile(W, 5)), "W_p95": float(np.percentile(W, 95)),
             "cagr_median": float(np.median(cagr)),

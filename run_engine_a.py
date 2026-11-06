@@ -17,8 +17,9 @@ import numpy as np
 from barrier import config as C
 from barrier import data as D
 from barrier import engine as E
+from barrier import scanner as S
 from barrier import theory as T
-from barrier.models import calibrate_all
+from barrier.models import calibrate_all, rolling_entry_models
 
 SIMS_DIR = C.RESULTS_DIR / "sims"
 NS = [100, 300, 1_000, 3_000, 10_000, 30_000, 50_000]
@@ -154,7 +155,9 @@ def predictions(ds, param_sets, results) -> None:
     for pname, models in param_sets.items():
         preds[pname] = {}
         for mname, model in models.items():
-            ep = E.simulate(model, C.N_EPISODES, rng_for(ds.key, pname, mname))
+            rng = rng_for(ds.key, pname, mname)
+            ep = E.simulate_rolling(model, C.N_EPISODES, rng) if isinstance(model, list) \
+                else E.simulate(model, C.N_EPISODES, rng)
             np.savez_compressed(SIMS_DIR / f"{ds.key}_{pname}_{mname}.npz",
                                 outcome=ep.outcome, tau=ep.tau, exit_log=ep.exit_log,
                                 **{f"snap_{c}": v for c, v in ep.snap.items()})
@@ -163,9 +166,13 @@ def predictions(ds, param_sets, results) -> None:
                 for cap in (None, *C.CAPS_REPORTED)}
     results["predictions"] = preds
 
+    tags = {
+        "train": "STATIC TRAINING params (frozen at split)",
+        "rolling": f"ROLLING {C.ROLLING_YEARS}-yr params (updated before each trade, out-of-sample)",
+        "oracle": "TEST-period params (ORACLE, diagnosis only)",
+    }
     for pname in param_sets:
-        tag = "TRAINING params (real predictions)" if pname == "train" else \
-              "TEST-period params (ORACLE, diagnosis only)"
+        tag = tags.get(pname, pname)
         for view in ("uncapped", f"cap{C.CAP_DAYS}", "cap252"):
             print(f"\n--- {ds.label} | {tag} | {view} | N = {C.N_EPISODES:,} per model")
             print(f"{'model':<11}{'win':>7}{'ruin':>7}{'t/out':>7}{'mean d':>8}{'median':>8}"
@@ -184,8 +191,12 @@ def predictions(ds, param_sets, results) -> None:
 def main() -> None:
     for ds in C.DATASETS.values():
         print("\n" + "#" * 100 + f"\n#  {ds.label}\n" + "#" * 100)
-        _, train, test, _ = D.load(ds)
+        full, train, test, _ = D.load(ds)
+        ch0 = S.chain(S.scan(test, mode="close"), 0)
+        roll_seq = rolling_entry_models(D.log_returns(full), ch0.start)
+        rolling_by_model = {m: [entry[m] for entry in roll_seq] for m in ("RandomWalk", "GBM", "Merton")}
         param_sets = {"train": calibrate_all(D.log_returns(train)),
+                      "rolling": rolling_by_model,
                       "oracle": calibrate_all(D.log_returns(test))}
         results = {"dataset": ds.key, "n_episodes": C.N_EPISODES,
                    "caps": list(C.CAPS_REPORTED), "main_cap": C.CAP_DAYS}

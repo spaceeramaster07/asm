@@ -44,7 +44,11 @@ def table1(ds) -> pd.DataFrame:
         rows.append({"Source": src, "Win": pct(p), "Ruin": pct(1 - p), "Timeout": "-",
                      "Mean days": num(t), "Median": "-", "SD": "-", "p5-p95": "-",
                      "Stop fill": pct(stop, 2), "Stop fill worst 1%": "-", "KS p vs chain": "-"})
-    for params, tag in (("train", "Sim, training params"), ("oracle", "Sim, test params (oracle)")):
+    for params, tag in (
+        ("train", "Sim, static training params"),
+        ("rolling", "Sim, 5y rolling params (out-of-sample)"),
+        ("oracle", "Sim, test params (oracle)"),
+    ):
         for m in WORLDS:
             s = ea[params][m][f"cap{C.CAP_DAYS}"]
             sc = real["models"][f"{params}/{m}"]
@@ -120,6 +124,32 @@ def table2(ds) -> tuple[pd.DataFrame, pd.DataFrame]:
     return out[0], out[1]
 
 
+def table2_spectrum(ds) -> pd.DataFrame:
+    tr = load(f"tournament_{ds.key}.json")["q6"]
+    spec = tr.get("fractional_spectrum", {})
+    if not spec:
+        return pd.DataFrame()
+    rows = []
+    for kind in ("Static", "Rolling"):
+        for mult in spec["multipliers"]:
+            k = f"{kind} {mult:.2f}x"
+            mg = spec["worlds"]["GBM"][k]
+            mm = spec["worlds"]["Merton"][k]
+            mr = spec["real"][k]
+            rows.append({
+                "Kelly mode": f"{kind} ({mult:.2f}x f*)",
+                "Effective f": f"{mg['f']:.2f}",
+                "GBM: median W (CAGR)": f"{mg['W_median']:.0f} ({pct(mg['cagr_median'])})",
+                "GBM: median MDD": pct(mg["mdd_median"], 0),
+                "Merton: median W (CAGR)": f"{mm['W_median']:.0f} ({pct(mm['cagr_median'])})",
+                "Merton: median MDD": pct(mm["mdd_median"], 0),
+                "Merton: P(lose half)": pct(mm["p_lose_half"], 1),
+                "REAL: W (CAGR)": f"{mr['W_median']:.0f} ({pct(mr['cagr_median'])})",
+                "REAL: MDD": pct(mr["mdd_median"], 0),
+            })
+    return pd.DataFrame(rows)
+
+
 def main() -> None:
     TABLE_DIR.mkdir(parents=True, exist_ok=True)
     md = ["# Final tables\n",
@@ -129,10 +159,12 @@ def main() -> None:
     for ds in C.DATASETS.values():
         t1 = table1(ds)
         t2, t2l = table2(ds)
+        t2s = table2_spectrum(ds)
         K = load(f"tournament_{ds.key}.json")["q6"]["K_real"]
-        for name, df in (("table1", t1), ("table2", t2), ("table2_long", t2l)):
-            df.to_csv(TABLE_DIR / f"{name}_{ds.key}.csv", index=False)
-            (TABLE_DIR / f"{name}_{ds.key}.md").write_text(df.to_markdown(index=False))
+        for name, df in (("table1", t1), ("table2", t2), ("table2_long", t2l), ("table2_spectrum", t2s)):
+            if not df.empty:
+                df.to_csv(TABLE_DIR / f"{name}_{ds.key}.csv", index=False)
+                (TABLE_DIR / f"{name}_{ds.key}.md").write_text(df.to_markdown(index=False))
         md += [f"\n## {ds.label}\n",
                f"\n### Table 1 - Model accuracy (test period {ds.test[0][:4]}-{ds.test[1][:4]})\n\n",
                t1.to_markdown(index=False),
@@ -141,6 +173,9 @@ def main() -> None:
                t2.to_markdown(index=False),
                f"\n\n### Table 2b - Long run, {C.K_LONG} rounds\n\n",
                t2l.to_markdown(index=False), "\n"]
+        if not t2s.empty:
+            md += [f"\n### Table 2c - Fractional Kelly spectrum ({K} rounds, Static vs 5y Rolling)\n\n",
+                   t2s.to_markdown(index=False), "\n"]
     path = C.RESULTS_DIR / "TABLES.md"
     path.write_text("".join(md), encoding="utf-8")
     print(f"saved {path} and {TABLE_DIR}")
