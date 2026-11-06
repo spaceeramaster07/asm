@@ -78,6 +78,8 @@ Figures: [plots/q3_durations_nifty.png](plots/q3_durations_nifty.png), [plots/q3
 - **Overshoot is where Merton wins.** Merton's worst 1% of stops (−17% to −18%) also matches the real worst Nifty stop (−17.4%), while GBM's worst 1% is −12% to −13%.
 - **A real stop-loss order behaves differently.** Checking High/Low and filling at the Open on gap days, the average Nifty stop is −10.3% and the S&P −10.05%. Most of the overshoot comes from waiting for the close; overnight gaps account for the rest. (S&P Opens before 2006 are placeholders, so its intraday figure understates gaps.)
 
+Figures: [plots/q4_overshoot_nifty.png](plots/q4_overshoot_nifty.png), [plots/q4_overshoot_spx.png](plots/q4_overshoot_spx.png)
+
 ## Q5: What bet size maximizes long-run growth? **Kelly behaves as the theory predicts, once cash is accounted for.**
 
 | | Kelly f* | Matches cash return at | Ratio | Half Kelly keeps |
@@ -114,7 +116,7 @@ The trader bets the Kelly fraction from the training GBM in every world, with 2,
 
 - **Hypothesis check:** Full Kelly highest median ✔. Severe drawdowns when Kelly means leverage ✔ (in every world, not just jump worlds). Half Kelly about 75% of the growth with far less risk ✔. Martingale "near-total bankruptcy" ✘: the 3× cap and −10% stops prevent it, though its long-run drawdowns are the worst of the six.
 
-Figures: [plots/q6_tournament_nifty.png](plots/q6_tournament_nifty.png), [plots/q6_tournament_spx.png](plots/q6_tournament_spx.png)
+Figures: [plots/q6_tournament_nifty.png](plots/q6_tournament_nifty.png), [plots/q6_tournament_spx.png](plots/q6_tournament_spx.png), [plots/q6_frontier_nifty.png](plots/q6_frontier_nifty.png), [plots/q6_frontier_spx.png](plots/q6_frontier_spx.png)
 
 ## Q7: What if the trader misjudges the drift? **Overestimating is costly; Half Kelly and the leverage cap protect against it.**
 
