@@ -1,0 +1,31 @@
+# --- Python environment & caches (rebuild with: python -m venv .venv && pip install -r requirements.txt)
+.venv/
+venv/
+env/
+__pycache__/
+*.py[cod]
+.ipynb_checkpoints/
+.pytest_cache/
+
+# --- Editors / OS
+.vscode/
+.idea/
+*.swp
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# --- Secrets
+.env
+
+# --- Generated results that are large or noisy (regenerate with the run_*.py scripts)
+# Raw simulated episodes (binary, ~5 MB; recreated by run_engine_a.py in ~16 s)
+results/sims/
+# Per-run logs
+results/*.txt
+results/**/*.log
+
+# NOTE: data/*.csv is committed on purpose. yfinance can revise history, and this frozen
+# snapshot is what makes every number in results/ reproducible.
+# results/REPORT.md, TABLES.md, tables/, plots/ and *.json are committed so the report's
+# links and figures work on a fresh clone.
