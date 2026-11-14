@@ -69,6 +69,12 @@ class GBMModel:
     def moments(self) -> dict:
         return {"mean": self.nu * C.DT, "var": self.sigma ** 2 * C.DT, "skew": 0.0, "exkurt": 0.0}
 
+    def daily_cdf(self, y):
+        return stats.norm.cdf(y, self.nu * C.DT, self.sigma * math.sqrt(C.DT))
+
+    def daily_logpdf(self, y):
+        return stats.norm.logpdf(y, self.nu * C.DT, self.sigma * math.sqrt(C.DT))
+
     def theory(self) -> dict:
         pc, tc = T.gbm_first_passage(self.nu, self.sigma)
         pd_, td = T.gbm_first_passage_daily(self.nu, self.sigma)
@@ -228,8 +234,31 @@ class MertonModel:
         return {"mean": mean, "var": var, "skew": k3 / var ** 1.5, "exkurt": k4 / var ** 2}
 
     def theory(self) -> dict:
-        # No elementary closed form for two-sided exit with jumps -> Monte Carlo (Step 3).
+        # No elementary closed form for two-sided exit with jumps -> grid solver (theory.py).
         return {}
+
+    def _mixture(self, n_max: int | None = None):
+        """Daily increment = Normal mixture over the number of jumps n ~ Poisson(lam dt)."""
+        ld = self.lam * C.DT
+        if n_max is None:
+            n_max = int(stats.poisson.ppf(1 - 1e-14, ld)) + 1 if ld > 0 else 0
+        n = np.arange(n_max + 1)
+        w = stats.poisson.pmf(n, ld) if ld > 0 else (n == 0).astype(float)
+        mean = self.nu_d * C.DT + n * self.mu_J
+        sd = np.sqrt(self.sigma_d ** 2 * C.DT + n * self.sigma_J ** 2)
+        return w, mean, sd
+
+    def daily_cdf(self, y):
+        w, m, s = self._mixture()
+        y = np.asarray(y, float)
+        return sum(wi * stats.norm.cdf(y, mi, si) for wi, mi, si in zip(w, m, s))
+
+    def daily_logpdf(self, y):
+        w, m, s = self._mixture()
+        y = np.asarray(y, float)
+        terms = np.stack([np.log(wi) + stats.norm.logpdf(y, mi, si)
+                          for wi, mi, si in zip(w, m, s) if wi > 0])
+        return np.logaddexp.reduce(terms, axis=0)
 
     def jumps_per_year(self) -> dict:
         s = pd.Series(1, index=pd.to_datetime(self.jump_dates))
@@ -246,7 +275,10 @@ def calibrate_all(r: pd.Series) -> dict:
 
 def rolling_window_returns(full_returns: pd.Series, entry_date, window: int = C.ROLLING_DAYS) -> pd.Series:
     """Trailing `window` daily log returns known at the Close of `entry_date`."""
-    return full_returns.loc[:entry_date].iloc[-window:]
+    r = full_returns.loc[:entry_date].iloc[-window:]
+    if len(r) < window:
+        raise ValueError(f"only {len(r)} returns before {entry_date}, window needs {window}")
+    return r
 
 
 def calibrate_rolling_at(full_returns: pd.Series, entry_date, window: int = C.ROLLING_DAYS) -> dict:
@@ -254,6 +286,39 @@ def calibrate_rolling_at(full_returns: pd.Series, entry_date, window: int = C.RO
     return calibrate_all(rolling_window_returns(full_returns, entry_date, window))
 
 
-def rolling_entry_models(full_returns: pd.Series, entry_dates, window: int = C.ROLLING_DAYS) -> list[dict]:
-    """List of calibrated model dicts, one per trade entry date."""
-    return [calibrate_rolling_at(full_returns, d, window) for d in entry_dates]
+@dataclass
+class CalibrationGrid:
+    """Rolling fits on the first trading day of each month. A day uses the latest fit dated on or
+    before it, so every prediction only uses returns up to that day's close."""
+    dates: pd.DatetimeIndex
+    fits: list            # list of {model name: fitted model}
+    window: int
+
+    def index_for(self, days, strictly_before: bool = False) -> np.ndarray:
+        """Grid position used by each day (vectorised).
+
+        strictly_before=False: latest fit dated on or before the day (decisions made at that day's
+        close, e.g. entering a trade). True: latest fit dated before the day, for scoring the day's
+        own return without having seen it. Days with no earlier fit get -1."""
+        side = "left" if strictly_before else "right"
+        pos = self.dates.searchsorted(pd.DatetimeIndex(days), side=side) - 1
+        if not strictly_before and (pos < 0).any():
+            raise ValueError("day before the first calibration date")
+        return pos
+
+    def model_for_day(self, day, name: str):
+        return self.fits[int(self.index_for([day])[0])][name]
+
+
+def month_starts(index: pd.DatetimeIndex) -> pd.DatetimeIndex:
+    """First trading day of each calendar month in `index`."""
+    s = pd.Series(index, index=index)
+    return pd.DatetimeIndex(s.groupby([index.year, index.month]).first().to_numpy())
+
+
+def calibration_grid(full_returns: pd.Series, days: pd.DatetimeIndex,
+                     window: int = C.ROLLING_DAYS) -> CalibrationGrid:
+    """Monthly rolling calibration covering `days` (e.g. the test period's trading days)."""
+    dates = month_starts(days)
+    fits = [calibrate_rolling_at(full_returns, d, window) for d in dates]
+    return CalibrationGrid(dates=dates, fits=fits, window=window)

@@ -1,45 +1,49 @@
-"""Engine A: single-episode Monte Carlo. Answers Q1 and produces each model's predictions.
+"""Q1: does the simulator agree with the theory?
 
-Run:  .venv/Scripts/python run_engine_a.py
-Writes results/engine_a_<dataset>.json, results/sims/*.npz, results/plots/q1_convergence_*.png
+Parameters: the rolling 5-year fit at the first test date (any parameters would do; this is a code check).
+Uncapped Monte Carlo pools are compared with
+  - Random walk : exact gambler's-ruin formula on the lattice
+  - GBM         : continuous-monitoring formula (biased for daily closes), the BGK-corrected formula,
+                  and the exact daily-close answer from the Markov-chain grid solver
+  - Merton      : exact daily-close answer from the grid solver (no closed form exists)
+plus printed consistency checks (Merton with lambda = 0 vs GBM, grid convergence).
+
+Run:  .venv/Scripts/python run_q1_theory.py
+Writes results/q1_<dataset>.json and results/plots/q1_convergence_<dataset>.png
 """
 from __future__ import annotations
 
 import json
 import math
 import time
+from dataclasses import replace
 
-import matplotlib
-matplotlib.use("Agg")
-import matplotlib.pyplot as plt
 import numpy as np
 
 from barrier import config as C
 from barrier import data as D
 from barrier import engine as E
-from barrier import scanner as S
+from barrier import plotstyle as P
 from barrier import theory as T
-from barrier.models import calibrate_all, rolling_entry_models
+from barrier.models import calibration_grid
+from barrier.rng import rng_for
 
-SIMS_DIR = C.RESULTS_DIR / "sims"
-NS = [100, 300, 1_000, 3_000, 10_000, 30_000, 50_000]
+NS = [100, 300, 1_000, 3_000, 10_000, 30_000, 100_000]
 MAX_REPS = 1_000
+# color = model (same as every other plot), line style = which reference it is compared with
+SERIES = {
+    "rw": ("Random walk vs exact lattice formula", P.MODEL_COLOR["RandomWalk"], "-"),
+    "grid_gbm": ("Daily GBM vs exact daily grid", P.MODEL_COLOR["GBM"], "-"),
+    "bgk": ("Daily GBM vs BGK-corrected formula", P.MODEL_COLOR["GBM"], ":"),
+    "cont": ("Daily GBM vs continuous formula (biased)", P.MODEL_COLOR["GBM"], "--"),
+    "grid_merton": ("Merton vs exact daily grid", P.MODEL_COLOR["Merton"], "-"),
+}
+SHORT = {"rw": "RW", "grid_gbm": "GBM grid", "bgk": "GBM BGK", "cont": "GBM continuous",
+         "grid_merton": "Merton grid"}
 
-# reference palette (dataviz skill, light mode)
-INK, INK2, GRID = "#0b0b0b", "#52514e", "#e4e3df"
-SERIES = {"rw": "#2a78d6", "bgk": "#eb6834", "cont": "#1baf7a"}
 
-
-def rng_for(*key) -> np.random.Generator:
-    """Independent, reproducible stream per (dataset, params, model, purpose)."""
-    seed = [C.SEED] + [sum(ord(ch) * 131 ** i for i, ch in enumerate(str(k))) % 2**31
-                       for k in key]
-    return np.random.default_rng(seed)
-
-
-# ------------------------------------------------------------------ Q1
 def convergence(ep: E.Episodes, p_ref: float, t_ref: float) -> dict:
-    """Split the pool into disjoint replications of size N; RMSE and CI coverage per N."""
+    """Split the pool into disjoint replications of size N; RMSE and 95% CI coverage per N."""
     out = {}
     win = (ep.outcome == E.WIN).astype(float)
     tau = ep.tau.astype(float)
@@ -56,156 +60,125 @@ def convergence(ep: E.Episodes, p_ref: float, t_ref: float) -> dict:
             "t_rmse": float(np.sqrt(np.mean((t_hat - t_ref) ** 2))),
             "p_cover": float(np.mean(np.abs(p_hat - p_ref) <= 1.96 * p_se)),
             "t_cover": float(np.mean(np.abs(t_hat - t_ref) <= 1.96 * t_se)),
-            "p_se_theory": math.sqrt(p_ref * (1 - p_ref) / N),
         }
     return out
 
 
-def q1(ds, models, results) -> None:
-    print(f"\n--- Q1 convergence ({ds.label}, training parameters, uncapped, "
-          f"pool = {C.N_CONVERGENCE_POOL:,} paths per model)")
-    rw, gbm = models["RandomWalk"], models["GBM"]
+def q1(ds) -> dict:
+    full, _, test, _ = D.load(ds)
+    fit_date = test.index[0]
+    models = calibration_grid(D.log_returns(full), test.index[:1]).fits[0]
+    rw, gbm, mer = models["RandomWalk"], models["GBM"], models["Merton"]
+    print(f"\n--- Q1 ({ds.label}): rolling {C.ROLLING_YEARS}y fit at {fit_date.date()}: "
+          f"mu = {gbm.mu:+.2%}, sigma = {gbm.sigma:.2%}, lambda = {mer.lam:.1f}/yr; "
+          f"pool = {C.N_CONVERGENCE_POOL:,} uncapped paths per model")
+
     t0 = time.time()
-    ep_rw = E.simulate(rw, C.N_CONVERGENCE_POOL, rng_for(ds.key, "q1", "rw"))
-    ep_g = E.simulate(gbm, C.N_CONVERGENCE_POOL, rng_for(ds.key, "q1", "gbm"))
-    print(f"simulated in {time.time()-t0:.1f}s; still open at safety limit: "
-          f"RW {np.mean(ep_rw.outcome == E.TIMEOUT):.2e}, GBM {np.mean(ep_g.outcome == E.TIMEOUT):.2e}")
+    pools = {k: E.simulate(m, C.N_CONVERGENCE_POOL, rng_for(ds.key, "q1", k))
+             for k, m in (("rw", rw), ("gbm", gbm), ("merton", mer))}
+    print(f"simulated in {time.time()-t0:.1f}s")
 
     th_rw, th_g = rw.theory(), gbm.theory()
+    t0 = time.time()
+    p_grid_g, t_grid_g = T.grid_first_passage(gbm.daily_cdf)
+    p_grid_m, t_grid_m = T.grid_first_passage(mer.daily_cdf)
+    print(f"grid solves in {time.time()-t0:.1f}s")
     refs = {
-        "rw": ("RW sim vs exact lattice formula", ep_rw,
-               th_rw["p_win_exact_lattice"], th_rw["E_tau_days_exact_lattice"]),
-        "bgk": ("GBM daily sim vs BGK-corrected formula", ep_g,
-                th_g["p_win_daily_bgk"], th_g["E_tau_days_daily_bgk"]),
-        "cont": ("GBM daily sim vs continuous formula", ep_g,
-                 th_g["p_win_continuous"], th_g["E_tau_days_continuous"]),
+        "rw": (pools["rw"], th_rw["p_win_exact_lattice"], th_rw["E_tau_days_exact_lattice"]),
+        "grid_gbm": (pools["gbm"], p_grid_g, t_grid_g),
+        "bgk": (pools["gbm"], th_g["p_win_daily_bgk"], th_g["E_tau_days_daily_bgk"]),
+        "cont": (pools["gbm"], th_g["p_win_continuous"], th_g["E_tau_days_continuous"]),
+        "grid_merton": (pools["merton"], p_grid_m, t_grid_m),
     }
-    q1_out = {}
-    print(f"{'comparison':<42}{'theory p':>9}{'pooled p':>10}{'z':>7}"
-          f"{'theory E[t]':>12}{'pooled':>9}{'z':>7}")
-    for key, (label, ep, p_ref, t_ref) in refs.items():
+
+    out = {"dataset": ds.key, "fit_date": str(fit_date.date()), "pool": C.N_CONVERGENCE_POOL,
+           "params": {"mu": gbm.mu, "sigma": gbm.sigma, "lam": mer.lam, "mu_J": mer.mu_J,
+                      "sigma_J": mer.sigma_J, "rw_p": rw.p, "rw_A": rw.A, "rw_B": rw.B},
+           "comparisons": {}}
+    print(f"\n{'comparison':<40}{'theory p':>10}{'sim p':>9}{'z':>7}{'theory E[t]':>13}{'sim':>9}{'z':>7}")
+    for key, (ep, p_ref, t_ref) in refs.items():
         s = E.summarize(ep)
         zp = (s["p_win"] - p_ref) / s["p_win_se"]
         zt = (s["tau_mean"] - t_ref) / s["tau_se"]
-        print(f"{label:<42}{p_ref:>9.4f}{s['p_win']:>10.4f}{zp:>+7.1f}"
-              f"{t_ref:>12.2f}{s['tau_mean']:>9.2f}{zt:>+7.1f}")
-        conv = convergence(ep, p_ref, t_ref)
-        q1_out[key] = {"label": label, "p_ref": p_ref, "t_ref": t_ref,
-                       "pooled_p": s["p_win"], "pooled_p_se": s["p_win_se"], "z_p": zp,
-                       "pooled_t": s["tau_mean"], "pooled_t_se": s["tau_se"], "z_t": zt,
-                       "by_N": conv}
+        print(f"{SERIES[key][0]:<40}{p_ref:>10.5f}{s['p_win']:>9.5f}{zp:>+7.1f}"
+              f"{t_ref:>13.2f}{s['tau_mean']:>9.2f}{zt:>+7.1f}")
+        out["comparisons"][key] = {"label": SERIES[key][0], "p_ref": p_ref, "t_ref": t_ref,
+                                   "sim_p": s["p_win"], "sim_p_se": s["p_win_se"], "z_p": zp,
+                                   "sim_t": s["tau_mean"], "sim_t_se": s["tau_se"], "z_t": zt,
+                                   "by_N": convergence(ep, p_ref, t_ref)}
 
-    print(f"\n{'N':>7}{'reps':>6} | " + " | ".join(
-        f"{k:>4}: p_rmse  cover  t_rmse  cover" for k in refs))
-    for N in NS:
-        row = " | ".join(
-            f"      {q1_out[k]['by_N'][N]['p_rmse']:.4f} {q1_out[k]['by_N'][N]['p_cover']:6.1%}"
-            f" {q1_out[k]['by_N'][N]['t_rmse']:7.2f} {q1_out[k]['by_N'][N]['t_cover']:6.1%}"
-            for k in refs)
-        print(f"{N:>7}{q1_out['rw']['by_N'][N]['reps']:>6} | {row}")
-    results["q1"] = q1_out
-    plot_q1(ds, q1_out)
+    # ---- printed consistency checks (no plot)
+    print("\nconsistency checks")
+    chk = {}
+    mer0 = replace(mer, lam=0.0, nu_d=gbm.nu, sigma_d=gbm.sigma)
+    p0, t0_ = T.grid_first_passage(mer0.daily_cdf)
+    chk["merton_lam0_vs_gbm"] = {"dp": p0 - p_grid_g, "dt": t0_ - t_grid_g}
+    print(f"  Merton with lambda = 0 vs GBM (grid): dp = {p0 - p_grid_g:+.1e}, dE[t] = {t0_ - t_grid_g:+.1e}")
+    assert abs(p0 - p_grid_g) < 1e-10 and abs(t0_ - t_grid_g) < 1e-7
+    ep0 = E.simulate(mer0, 200_000, rng_for(ds.key, "q1", "merton0"))
+    s0 = E.summarize(ep0)
+    z0 = (s0["p_win"] - p_grid_g) / s0["p_win_se"]
+    chk["merton_lam0_sim_z"] = z0
+    print(f"  Merton with lambda = 0, simulated (200k) vs GBM grid: z(win) = {z0:+.1f}")
+    assert abs(z0) < 4
+    conv = {}
+    for n in (C.GRID_N // 2, C.GRID_N, 2 * C.GRID_N):
+        conv[n] = T.grid_first_passage(mer.daily_cdf, n=n)
+    dn = abs(conv[2 * C.GRID_N][0] - conv[C.GRID_N][0])
+    chk["grid_convergence_merton"] = {str(n): v for n, v in conv.items()}
+    print(f"  grid convergence (Merton p_win): n = {C.GRID_N // 2}: {conv[C.GRID_N // 2][0]:.6f}, "
+          f"{C.GRID_N}: {conv[C.GRID_N][0]:.6f}, {2 * C.GRID_N}: {conv[2 * C.GRID_N][0]:.6f}  "
+          f"(change on doubling {dn:.1e})")
+    assert dn < 1e-4
+    bgk_err = {"dp": th_g["p_win_daily_bgk"] - p_grid_g, "dt": th_g["E_tau_days_daily_bgk"] - t_grid_g}
+    chk["bgk_leftover_error"] = bgk_err
+    print(f"  BGK leftover error vs exact daily grid: dp = {bgk_err['dp']:+.5f}, "
+          f"dE[t] = {bgk_err['dt']:+.2f} days")
+    out["checks"] = chk
+    plot_q1(ds, out)
+    return out
 
 
-def plot_q1(ds, q1_out) -> None:
-    C.PLOTS_DIR.mkdir(parents=True, exist_ok=True)
-    fig, axes = plt.subplots(1, 2, figsize=(11, 4.3), facecolor="#fcfcfb")
-    labels = {"rw": "Random walk vs exact lattice formula",
-              "bgk": "Daily GBM vs BGK-corrected formula",
-              "cont": "Daily GBM vs continuous formula"}
-    for ax, metric, title, unit in [(axes[0], "p_rmse", "Win probability", "RMSE (probability)"),
-                                    (axes[1], "t_rmse", "Mean stopping time", "RMSE (days)")]:
-        ax.set_facecolor("#fcfcfb")
+def plot_q1(ds, out) -> None:
+    import matplotlib.ticker as tk
+    fig, axes = P.new_fig(ncols=2, w=5.8, h=4.4)
+    for ax, metric, title, unit in [(axes[0, 0], "p_rmse", "Win probability", "RMSE (probability)"),
+                                    (axes[0, 1], "t_rmse", "Mean stopping time", "RMSE (days)")]:
         Ns = np.array(NS)
-        for k in ("rw", "bgk", "cont"):
-            y = [q1_out[k]["by_N"][N][metric] for N in NS]
-            ax.plot(Ns, y, color=SERIES[k], lw=2, marker="o", ms=5, label=labels[k],
-                    ls="--" if k == "cont" else "-")
-        # 1/sqrt(N) reference anchored on the RW curve at the smallest N
-        y0 = q1_out["rw"]["by_N"][NS[0]][metric]
-        ax.plot(Ns, y0 * np.sqrt(NS[0] / Ns), color=INK2, lw=1, ls=":",
-                label=r"$\propto 1/\sqrt{N}$ reference")
-        ax.set_xscale("log"); ax.set_yscale("log")
-        tk = matplotlib.ticker
+        for key, (label, col, ls) in SERIES.items():
+            by = out["comparisons"][key]["by_N"]
+            by = {int(k): v for k, v in by.items()}
+            ys = [by[N][metric] for N in NS]
+            ax.plot(Ns, ys, color=col, lw=2, ls=ls, marker="o", ms=4, label=label)
+            if key in ("cont", "grid_merton"):
+                P.end_label(ax, Ns[-1], ys[-1], SHORT[key])
+        ax.set_xlim(NS[0] * 0.8, NS[-1] * 3.2)
+        y0 = {int(k): v for k, v in out["comparisons"]["grid_gbm"]["by_N"].items()}[NS[0]][metric]
+        ax.plot(Ns, y0 * np.sqrt(NS[0] / Ns), color=P.INK2, lw=1, ls=(0, (1, 3)),
+                label=r"$\propto 1/\sqrt{N}$")
+        ax.set_xscale("log")
+        ax.set_yscale("log")
         for axis in (ax.xaxis, ax.yaxis):
             axis.set_major_locator(tk.LogLocator(base=10, subs=(1.0, 2.0, 5.0)))
             axis.set_major_formatter(tk.FuncFormatter(lambda v, _: f"{v:g}"))
             axis.set_minor_formatter(tk.NullFormatter())
-        ax.set_title(title, color=INK, fontsize=11, loc="left")
-        ax.set_xlabel("Episodes per estimate, N", color=INK2)
-        ax.set_ylabel(unit, color=INK2)
-        ax.grid(True, which="major", color=GRID, lw=0.8)
-        ax.tick_params(colors=INK2, labelsize=9)
-        for s in ax.spines.values():
-            s.set_color(GRID)
-    axes[0].legend(frameon=False, fontsize=8.5, labelcolor=INK2, loc="lower left")
-    fig.suptitle(f"Q1 - Monte Carlo convergence to closed-form theory ({ds.label}, "
-                 "training parameters)", color=INK, fontsize=12, x=0.01, ha="left")
-    fig.tight_layout()
-    path = C.PLOTS_DIR / f"q1_convergence_{ds.key}.png"
-    fig.savefig(path, dpi=150)
-    plt.close(fig)
-    print(f"saved {path}")
-
-
-# ------------------------------------------------------------------ predictions
-def predictions(ds, param_sets, results) -> None:
-    SIMS_DIR.mkdir(parents=True, exist_ok=True)
-    preds = {}
-    for pname, models in param_sets.items():
-        preds[pname] = {}
-        for mname, model in models.items():
-            rng = rng_for(ds.key, pname, mname)
-            ep = E.simulate_rolling(model, C.N_EPISODES, rng) if isinstance(model, list) \
-                else E.simulate(model, C.N_EPISODES, rng)
-            np.savez_compressed(SIMS_DIR / f"{ds.key}_{pname}_{mname}.npz",
-                                outcome=ep.outcome, tau=ep.tau, exit_log=ep.exit_log,
-                                **{f"snap_{c}": v for c, v in ep.snap.items()})
-            preds[pname][mname] = {
-                ("uncapped" if cap is None else f"cap{cap}"): E.summarize(E.apply_cap(ep, cap))
-                for cap in (None, *C.CAPS_REPORTED)}
-    results["predictions"] = preds
-
-    tags = {
-        "train": "STATIC TRAINING params (frozen at split)",
-        "rolling": f"ROLLING {C.ROLLING_YEARS}-yr params (updated before each trade, out-of-sample)",
-        "oracle": "TEST-period params (ORACLE, diagnosis only)",
-    }
-    for pname in param_sets:
-        tag = tags.get(pname, pname)
-        for view in ("uncapped", f"cap{C.CAP_DAYS}", "cap252"):
-            print(f"\n--- {ds.label} | {tag} | {view} | N = {C.N_EPISODES:,} per model")
-            print(f"{'model':<11}{'win':>7}{'ruin':>7}{'t/out':>7}{'mean d':>8}{'median':>8}"
-                  f"{'sd':>7}{'p5':>6}{'p95':>6}{'d|win':>7}{'d|ruin':>7}"
-                  f"{'stop ret':>9}{'stop p1':>9}{'t/o ret':>8}")
-            for mname, r in preds[pname].items():
-                s = r[view]
-                print(f"{mname:<11}{s['p_win']:>7.1%}{s['p_ruin']:>7.1%}{s['p_timeout']:>7.1%}"
-                      f"{s['tau_mean']:>8.1f}{s['tau_median']:>8.0f}{s['tau_sd']:>7.0f}"
-                      f"{s['tau_p05']:>6.0f}{s['tau_p95']:>6.0f}{s['tau_mean_win']:>7.0f}"
-                      f"{s['tau_mean_ruin']:>7.0f}{s['ret_mean_ruin']:>+9.2%}"
-                      f"{s['ret_p01_ruin']:>+9.2%}"
-                      + (f"{s['ret_mean_timeout']:>+8.1%}" if s['p_timeout'] > 0 else f"{'-':>8}"))
+        P.titles(ax, title, "Episodes per estimate, N", unit)
+    P.legend(axes[0, 0], loc="lower left", fontsize=7.8)
+    P.save(fig, C.PLOTS_DIR / f"q1_convergence_{ds.key}.png",
+           f"Monte Carlo convergence to theory ({ds.label}, rolling fit at {out['fit_date']})")
 
 
 def main() -> None:
+    import sys
+    if "plots" in sys.argv[1:]:                      # redraw from saved JSON, no simulation
+        for ds in C.DATASETS.values():
+            plot_q1(ds, json.loads((C.RESULTS_DIR / f"q1_{ds.key}.json").read_text()))
+        return
     for ds in C.DATASETS.values():
-        print("\n" + "#" * 100 + f"\n#  {ds.label}\n" + "#" * 100)
-        full, train, test, _ = D.load(ds)
-        ch0 = S.chain(S.scan(test, mode="close"), 0)
-        roll_seq = rolling_entry_models(D.log_returns(full), ch0.start)
-        rolling_by_model = {m: [entry[m] for entry in roll_seq] for m in ("RandomWalk", "GBM", "Merton")}
-        param_sets = {"train": calibrate_all(D.log_returns(train)),
-                      "rolling": rolling_by_model,
-                      "oracle": calibrate_all(D.log_returns(test))}
-        results = {"dataset": ds.key, "n_episodes": C.N_EPISODES,
-                   "caps": list(C.CAPS_REPORTED), "main_cap": C.CAP_DAYS}
-        t0 = time.time()
-        q1(ds, param_sets["train"], results)
-        predictions(ds, param_sets, results)
-        path = C.RESULTS_DIR / f"engine_a_{ds.key}.json"
-        path.write_text(json.dumps(results, indent=2, default=str))
-        print(f"\nsaved {path}  ({time.time()-t0:.0f}s)")
+        res = q1(ds)
+        path = C.RESULTS_DIR / f"q1_{ds.key}.json"
+        path.write_text(json.dumps(res, indent=2, default=str))
+        print(f"saved {path}")
 
 
 if __name__ == "__main__":

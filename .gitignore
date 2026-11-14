@@ -19,7 +19,8 @@ desktop.ini
 .env
 
 # --- Generated results that are large or noisy (regenerate with the run_*.py scripts)
-# Raw simulated episodes (binary, ~5 MB; recreated by run_engine_a.py in ~16 s)
+# Cached exit distributions and Kelly tables (recreated by run_q3_barriers.py / run_q4_kelly.py)
+results/cache/
 results/sims/
 # Per-run logs
 results/*.txt

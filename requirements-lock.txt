@@ -1,0 +1,9 @@
+# Exact versions used to produce the results in results/ (Python 3.12).
+# Install with:  pip install -r requirements-lock.txt
+numpy==2.5.4
+pandas==3.1.1
+scipy==1.18.1
+matplotlib==3.11.2
+tabulate==0.10.0
+pytest==9.2.0
+yfinance==1.8.0

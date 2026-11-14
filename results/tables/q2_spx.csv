@@ -1,0 +1,5 @@
+Model,Log-lik/day,|z|>3,|z|>4,Excess kurtosis of z,JB p,Ljung-Box z² p,ARCH-LM p,Berkowitz p,ACF |z| lag 1
+GBM,2.9636,2.07%,1.068%,7.02,0.0e+00,0.0e+00,0.0e+00,4.9e-38,+0.302
+Merton,3.1123,0.41%,0.099%,0.49,6.9e-18,0.0e+00,0.0e+00,5.9e-20,+0.235
+Merton − GBM,"+0.1488 [+0.051, +0.283]",,,,,,,,
+Random walk,not scored (two-point distribution),,,,,,,,

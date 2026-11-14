@@ -1,0 +1,4 @@
+Model,f* mean,f* range,Months f* > 3x,Months f* = 0,Excess growth over cash /yr,Half-Kelly share,Cash break-even / f*,Ruin cliff
+RandomWalk,2.25,0.00–4.71,18%,3%,+9.84%,76%,1.88,10.0x
+GBM,2.24,0.00–4.22,18%,3%,+9.89%,76%,1.73,7.0x
+Merton,2.16,0.00–3.48,17%,3%,+9.67%,76%,1.36,3.5x

@@ -1,0 +1,6 @@
+Comparison,Theory P(win),Sim P(win),z (win),Theory E[days],Sim E[days],z (days)
+Random walk vs exact lattice formula,0.59865,0.59870,+0.1,182.50,182.53,+0.1
+Daily GBM vs exact daily grid,0.62741,0.62708,-0.5,204.53,204.47,-0.2
+Daily GBM vs BGK-corrected formula,0.62742,0.62708,-0.5,204.28,204.47,+0.8
+Daily GBM vs continuous formula,0.61237,0.62708,+21.5,188.73,204.47,+68.4
+Merton vs exact daily grid,0.63148,0.63208,+0.9,207.22,207.44,+0.9
