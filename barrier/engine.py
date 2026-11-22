@@ -1,4 +1,4 @@
-"""Step 3 (Engine A): single-episode Monte Carlo first-passage simulator.
+"""Single-trade Monte Carlo first-passage simulator (used by Q1 and the tests).
 
 Every path starts at X=0 (price 100), adds one daily log-return increment per trading day,
 and stops on the first daily close with X >= b (win) or X <= a (ruin). Paths are run
@@ -83,13 +83,6 @@ def simulate(model, n: int, rng: np.random.Generator, max_days: int = C.SAFETY_M
         if alive.size:                          # survived SAFETY_MAX_DAYS: close at market
             exit_log[ids[alive]] = x[alive]
     return Episodes(outcome, tau, exit_log, snap)
-
-
-def load(path) -> Episodes:
-    """Load episodes saved by run_engine_a.py (results/sims/*.npz)."""
-    z = np.load(path)
-    snap = {int(k.split("_")[1]): z[k] for k in z.files if k.startswith("snap_")}
-    return Episodes(z["outcome"], z["tau"], z["exit_log"], snap)
 
 
 def apply_cap(ep: Episodes, cap: int | None) -> Episodes:

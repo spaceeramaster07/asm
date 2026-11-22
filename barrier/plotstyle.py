@@ -42,15 +42,36 @@ def legend(ax, **kw):
     ax.legend(labelcolor=INK2, **kw)
 
 
+def end_label(ax, x, y, text, dx=6, dy=0, fontsize=8):
+    """Direct label at the end of a line, in secondary ink (identity never rides on color alone)."""
+    ax.annotate(text, (x, y), xytext=(dx, dy), textcoords="offset points", color=INK2,
+                fontsize=fontsize, va="center", ha="left", annotation_clip=False)
+
+
 def pct_axis(axis, decimals=0):
     axis.set_major_formatter(tk.PercentFormatter(1.0, decimals=decimals))
 
 
 def save(fig, path, suptitle=None):
-    if suptitle:
-        fig.suptitle(suptitle, color=INK, fontsize=12, x=0.01, ha="left")
-    fig.tight_layout()
+    import warnings
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", UserWarning)   # gridspec + sharex figures: layout is fine
+        if suptitle:
+            import re
+            suptitle = re.sub(r"^Q\d+\s*-\s*", "", suptitle)   # figures stand alone in the report
+            fig.suptitle(suptitle, color=INK, fontsize=12, x=0.01, ha="left")
+            fig.tight_layout(rect=(0, 0, 1, 0.95))
+        else:
+            fig.tight_layout()
     path.parent.mkdir(parents=True, exist_ok=True)
-    fig.savefig(path, dpi=150)
+    import time
+    for attempt in range(6):            # OneDrive can briefly lock a file it is syncing
+        try:
+            fig.savefig(path, dpi=150)
+            break
+        except OSError:
+            if attempt == 5:
+                raise
+            time.sleep(1.5)
     plt.close(fig)
     print(f"saved {path}")

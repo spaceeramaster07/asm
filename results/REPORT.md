@@ -1,165 +1,259 @@
-# +20% / −10% barrier trading on Nifty 50 (validated on the S&P 500): results
+# +20% / −10% barrier trading on Nifty 50 (validated on the S&P 500)
 
-**Setup.** Buy at the close and exit at the first daily close that is +20% (win) or −10% (ruin) from entry. Any trade still open after 504 trading days is a *timeout*. Three models (biased random walk, GBM, Merton jump-diffusion) are calibrated on a training period and tested on a later, unseen test period:
+**Hypothesis.** A biased random walk, geometric Brownian motion (GBM) and Merton jump-diffusion describe
+daily log prices well enough to (a) predict a barrier trade, *buy at the close, sell at the first close
++20% (win) or −10% (stop) from entry, or after 504 trading days (timeout)*, and (b) size bets in a
+repeated version of that trade.
 
-| | Training (models are fitted here) | Test (out-of-sample) | Risk-free rate (assumed) |
-|---|---|---|---|
-| Nifty 50 (main) | 2007-09 → 2016 | 2017 → 2025 | 6.0% |
-| S&P 500 (validation) | 1962 → 1993 | 1994 → 2025 | 2.5% |
+**Setup.** Everything is out of sample. Every model is refit on the first trading day of each month on
+the trailing **5 years** of daily returns and only ever predicts later days. The training years serve as
+burn-in and as the place where the window length was chosen. There are no frozen or hindsight parameters.
 
-All three models reproduce the training data's daily mean and variance exactly, so any difference between them comes from the *shape* of returns. "Oracle" means the same model refitted on the test period. It is used only to diagnose errors, never to make predictions. Full tables are in [TABLES.md](TABLES.md).
+| | Burn-in / window choice | Test period | Monthly fits | Cash rate |
+|---|---|---|---|---|
+| **Nifty 50** | 2007-09 → 2016 | 2017 → 2025 | 108 | 6.0% |
+| **S&P 500** | 1962 → 1993 | 1994 → 2025 | 384 | 2.5% |
+
+All three models match each window's daily mean and variance exactly, so differences between them come
+from the *shape* of returns (two-point lattice, normal, normal plus jumps). Full tables: [TABLES.md](TABLES.md).
 
 ## Headline findings
 
-1. **The theory and the code agree.** Simulations converge to the exact formulas at the expected 1/√N rate, provided the daily-checking correction (BGK) is applied. Without it, the continuous formula is off by about 1.2 points of win rate and 12–18 days.
-2. **The drift you estimate matters more than which model you choose.** The three models never differ by more than about 2 points. Training-period drift is so uncertain (Nifty: ±8%/yr) that the forecast win rate could plausibly be anywhere from 27% to 62%.
-3. **Real markets are "clumpy" in a way no constant-volatility model can be.** Average trade length depends on how you sample real data: 152 vs 224 days on Nifty, 165 vs 215 on the S&P. In the models both ways give the same answer. This is direct evidence of volatility clustering.
-4. **Merton is the only model that gets the stop-loss overshoot right.** But most real overshoot comes from checking prices only at the close. Intraday stops land at about −10.1% to −10.3%.
-5. **Kelly works as the theory says. Overconfidence is what breaks it.** Over-betting stops paying more than cash at about 2× Kelly, and Half Kelly keeps 75% of the excess growth. A trader who doubles the true drift loses money, and a 3× leverage cap or Half Kelly prevents that.
+1. **The code matches the theory** (Q1). Simulation agrees with every exact answer (|z| ≤ 1.6),
+   including a new exact daily-close solver for GBM and Merton. The textbook continuous formula is
+   biased for daily checking (z = +21 to +68).
+2. **Merton fits daily returns clearly better than GBM, but neither captures volatility clustering** (Q2).
+   Out of sample, Merton gains +0.19 (Nifty) and +0.15 (S&P) log-likelihood per day, with CIs excluding 0,
+   mostly in crisis years. Tails are fixed: days beyond 4σ fall from 0.86% to 0.05% on Nifty. Clustering
+   remains for both models (Ljung–Box p ≈ 0; |z| autocorrelation 0.26 to 0.35).
+3. **For the barrier trade itself, the models beat having no model, but cannot be told apart** (Q3). On
+   the S&P 500 all three models beat trailing outcome frequencies (log score +0.31 to +0.33 per start
+   day, CI excludes 0); on Nifty the gain (+0.04) is inside the noise of 9 years. Paired differences
+   between the models are all within their CIs. All models get exit timing wrong in the same way:
+   too few very fast and very slow exits, the signature of clustering. Only Merton reproduces the stop-loss
+   fills (−11.1% predicted vs −12.0% / −11.4% real; 1% tail −17% vs −17%).
+4. **The Kelly bet these models recommend is too noisy to use** (Q4–Q5). One standard error of 5-year
+   drift moves f\* by about 3 (Nifty 3.5, S&P 2.8). In worlds where the true f\* is known (1.1 Nifty,
+   1.75 S&P), the trader's estimate ranges from 0 to about 3× the truth (10th to 90th percentile), which
+   costs Full Kelly 3.5%/yr (Nifty) and 2.3%/yr (S&P) of growth.
+5. **Betting less wins.** In every world, Half Kelly beats Full Kelly (by 1.5 to 1.7%/yr on Nifty, 0.2
+   to 0.6%/yr on the S&P) with far smaller drawdowns, and over-betting (1.25× to 2×) is worse still.
+   **Merton Half Kelly is the best model-based strategy in every world**, including resampled real returns
+   (+0.18 to +0.20%/yr over GBM Half Kelly). **Buy & hold beats every barrier strategy by about 2%/yr**,
+   at the cost of 54 to 61% median drawdowns.
+6. **The models are useful but not sufficient.** Model-based Kelly beats model-free (empirical) Kelly in
+   every world, so the models extract more from 5 years of data than raw outcomes do. Strategy rankings in
+   the GBM and Merton worlds largely match the bootstrap world built from real returns, but the bootstrap
+   world has higher drawdowns, the cost of the clustering the models miss.
 
 ---
 
-## Q1: Do the simulations converge to the exact formulas? **Yes.**
+## Q1: Does the code match the theory? **Yes.**
 
-Each check uses a pool of 500,000 simulated trades per model, with no time cap.
+Parameters: the rolling fit at the first test date. 500,000 uncapped simulated trades per model.
 
-| Comparison | Nifty: z (win) / z (days) | S&P: z (win) / z (days) |
+| Comparison | Nifty z (win / days) | S&P z (win / days) |
 |---|---|---|
-| Random walk vs exact lattice formula | +1.3 / +1.6 | +1.6 / +1.3 |
-| Daily GBM vs BGK-corrected formula | −1.1 / +2.3 | +0.3 / −0.5 |
-| Daily GBM vs continuous formula | **+17.7 / +102** | **+17.6 / +60** |
+| Random walk vs exact gambler's-ruin formula | +0.1 / +0.1 | +0.0 / −1.4 |
+| Daily GBM vs **exact daily grid** (new) | −0.5 / −0.2 | −0.0 / −0.9 |
+| Daily GBM vs BGK-corrected formula | −0.5 / +0.8 | −0.1 / −0.1 |
+| Daily GBM vs continuous formula | **+21.5 / +68.4** | **+22.0 / +50.9** |
+| Merton vs **exact daily grid** (new) | +0.9 / +0.9 | +1.6 / +1.0 |
 
-- Error falls at rate 1/√N. The 95% confidence intervals contain the exact value 93–96% of the time.
-- The continuous formula's error stops shrinking (the plateau in the plot). Checking only once a day adds about 1.2 points of win rate and 12 days (Nifty) or 18 days (S&P) to trade length. BGK removes almost all of this. The one exception is a residual of about 0.3 days on Nifty durations (z = 2.3), which is negligible in practice.
-- The draft's random-walk formula had q/p and p/q swapped. The corrected version, (1 − r^A)/(1 − r^(A+B)) with r = q/p, matches a direct numerical solution to 9 decimal places.
+- **The grid solver** (`theory.grid_first_passage`) puts the log price on 1,200 cells between the
+  barriers and moves it one day at a time using the model's daily distribution. Doubling the grid
+  changes P(win) by less than 2×10⁻⁵. It gives Merton, which has no closed form, an exact check.
+- **Consistency checks:** Merton with λ = 0 reproduces GBM to machine precision, and so does its simulation
+  (z = +0.2 / +0.4). The BGK correction is almost exact for the win rate (error 0.00001) but leaves
+  −0.24 days in the expected trade length.
 
-Figures: [plots/q1_convergence_nifty.png](plots/q1_convergence_nifty.png), [plots/q1_convergence_spx.png](plots/q1_convergence_spx.png)
+Figures: [q1_convergence_nifty.png](plots/q1_convergence_nifty.png), [q1_convergence_spx.png](plots/q1_convergence_spx.png)
 
-## Q2: How likely is +20% before −10%, and how sensitive is it to drift? **Very sensitive.**
+## Q2: Do the models fit daily returns? **Merton is better than GBM; neither captures clustering.**
 
-- **With no edge you mostly lose:** exactly **1/3** if price has zero drift (the price is then a martingale), or **36.6%** if log price has zero drift.
-- **Forecast (training) vs reality (test), win share among trades that hit a barrier:**
+Each day's return is scored with the latest fit made *before* that day (2,219 Nifty days, 8,053 S&P).
+Residuals are probability-integral transformed, z = Φ⁻¹(F_model(r)), which is i.i.d. N(0,1) if the model
+is right.
 
-  | | GBM forecast from training | Real test period, 95% CI |
-  |---|---|---|
-  | Nifty | 45.7% | **61%** [31%–89%] |
-  | S&P 500 | 58.0% | **58%** [45%–72%] |
-
-- **The training data can't pin the edge down.** The standard error on drift is 8.1%/yr for Nifty and 2.5%/yr for the S&P. Across a ±1.96 SE range of drift, the win rate spans **27%–62% (Nifty)** and **40%–71% (S&P)**.
-- The sensitivity curve is steep: in the Nifty plot, moving from the training drift (9.6%) to the test-period drift (14.5%) moves the predicted win rate by about 6–11 points.
-
-Figures: [plots/q2_sensitivity_nifty.png](plots/q2_sensitivity_nifty.png), [plots/q2_sensitivity_spx.png](plots/q2_sensitivity_spx.png)
-
-## Q3: How long until a barrier is hit, and do constant-volatility models capture the spread? **They get the order of magnitude, not the shape.**
-
-| Mean days to exit (504-day cap) | Training forecast (GBM) | Oracle GBM | Real: chain | Real: overlapping |
-|---|---|---|---|---|
-| Nifty | 96 | 183 | 152 | 224 |
-| S&P 500 | 241 | 154 | 165 | 215 |
-
-- **Volatility, not drift, sets the duration.** Training-fitted models get duration wrong in opposite directions on the two markets. Nifty's training period was more volatile than its test period (forecast too short); the S&P's was calmer (forecast too long).
-- **Evidence of clustering.** In any constant-volatility model, starting a trade on every day ("overlapping") and starting one only after the previous trade ends ("chain") give the same average length. In real data they differ by about 50–70 days. The chain samples crisis periods more often, because trades end quickly there, so it has many very fast trades: **23% of S&P chain trades end within 30 days, against 2% (training models) and 7–8% (oracle models)**. Overlapping windows weight calm periods by calendar time, which makes trades look long.
-- Real durations are also more spread out: standard deviation 145 vs 126 days for Nifty (oracle GBM), and 143 vs 117 for the S&P.
-- Checking intraday High/Low instead of only the Close ends trades **9–11 days earlier** on average.
-
-Figures: [plots/q3_durations_nifty.png](plots/q3_durations_nifty.png), [plots/q3_durations_spx.png](plots/q3_durations_spx.png)
-
-## Q4: Which model best predicts the real test period? **Merton, on the one dimension where models differ.**
-
-| | Win rate | Mean duration | Stop-loss fill (close-checked) | KS test on durations |
-|---|---|---|---|---|
-| Random walk | inside CI | Nifty training and S&P oracle: outside | −10.1%: **outside** | S&P training: rejected |
-| GBM | inside CI | Nifty training and S&P oracle: outside | −10.5% to −10.8%: **outside** | S&P training: rejected |
-| Merton | inside CI | Nifty training and S&P oracle: outside | −10.7% to −11.3%: **inside** for Nifty (both parameter sets) and S&P oracle | S&P training: rejected |
-| **Real** | Nifty 57.5%, S&P 53.6% | 224 / 215 days | **Nifty −12.0% [−12.7, −10.9]; S&P −11.4% [−12.0, −11.0]** | |
-
-- **Win rate can't separate the models.** The real intervals are very wide (Nifty 29%–84%), so every model fits.
-- **Durations:** the S&P oracle models' *mean* duration (146–162 days) falls below the overlapping interval (177–257) but close to the chain's 165, which is the clustering effect from Q3. The KS test rejects all three training-fitted S&P models (p ≤ 0.01 at all 60 chain start days). The oracle versions are not rejected (p 0.07–0.11). So the rejection is a parameter problem, not a model-shape problem. With only 12 Nifty trades, nothing can be rejected.
-- **Overshoot is where Merton wins.** Merton's worst 1% of stops (−17% to −18%) also matches the real worst Nifty stop (−17.4%), while GBM's worst 1% is −12% to −13%.
-- **A real stop-loss order behaves differently.** Checking High/Low and filling at the Open on gap days, the average Nifty stop is −10.3% and the S&P −10.05%. Most of the overshoot comes from waiting for the close; overnight gaps account for the rest. (S&P Opens before 2006 are placeholders, so its intraday figure understates gaps.)
-
-## Q5: What bet size maximizes long-run growth? **Kelly behaves as the theory predicts, once cash is accounted for.**
-
-| | Kelly f* | Matches cash return at | Ratio | Half Kelly keeps |
-|---|---|---|---|---|
-| Nifty, training (GBM / Merton) | 0.59 / 0.60 | 1.20 / 1.21 | **2.02×** | **75%** of excess growth |
-| S&P, training (GBM / Merton) | 2.21 / 2.26 | 4.31 / 4.37 | **1.95× / 1.93×** | **75%** |
-| Textbook two-point formula (no r_f, no overshoot) | Nifty 1.86, S&P 3.70 | | | |
-
-- With a positive risk-free rate, the right break-even is "**no better than cash**", not "zero growth". On that basis the "2× Kelly" rule holds within 1–4%.
-- **The risk-free rate matters far more than jumps.** At 6% cash, Nifty's Kelly fraction falls from 1.86 (textbook) to 0.59: once cash is accounted for, most of the apparent edge disappears.
-- **Hypothesis "jump overshoot lowers f\*": not supported.** Merton's f* is the same or slightly *higher*. Because the models are matched on variance, Merton has calmer diffusion between jumps, which offsets its fatter loss tail at these leverage levels.
-
-Figures: [plots/q5_kelly_nifty.png](plots/q5_kelly_nifty.png), [plots/q5_kelly_spx.png](plots/q5_kelly_spx.png)
-
-## Q6: Which strategy wins the tournament? **It depends on how much edge there is. Buy & Hold won in reality.**
-
-The trader bets the Kelly fraction from the training GBM in every world, with 2,000 careers per world. The career length equals the real chain: 12 rounds for Nifty, 48 for the S&P. Drawdowns are measured daily.
-
-**S&P 500 (f\* = 2.21, so Kelly is leveraged); median results in the GBM world:**
-
-| Strategy | Final wealth | CAGR | Median max drawdown | P(drawdown > 50%) | Real S&P: wealth / max drawdown |
+| | Nifty GBM | Nifty Merton | S&P GBM | S&P Merton | Normal |
 |---|---|---|---|---|---|
-| Full Kelly (2.21×) | **2,899** | **7.6%** | 78% | ~100% | 1,217 / **92%** |
-| Half Kelly (1.11×) | 1,646 | 6.3% | 46% | 36% | 984 / 64% |
-| Buy & Hold | 1,461 | 6.0% | 42% | 22% | **1,403** / 57% |
-| Fixed 50% | 758 | 4.5% | 20% | 0% | 508 / 34% |
-| Martingale | 908 | 4.8% | 43% | 40% | 269 / 78% |
-| Flat ₹50 | 503 | 3.6% | 11% | 0% | 372 / 18% |
+| Log-likelihood per day | 3.095 | **3.284** | 2.964 | **3.112** | |
+| Days with \|z\| > 4 | 0.86% | **0.05%** | 1.07% | **0.10%** | 0.006% |
+| Excess kurtosis of z | 11.5 | **0.7** | 7.0 | **0.5** | 0 |
+| Autocorrelation of \|z\|, lag 1 | 0.35 | 0.26 | 0.30 | 0.24 | 0 |
+| Ljung–Box on z² (10 lags), p | ≈0 | ≈0 | ≈0 | ≈0 | |
 
-- Full Kelly has the highest median wealth in every simulated world, but drawdowns above 50% are almost certain. The real Full Kelly trader fell **92% from peak** (2000–02 and 2008) before recovering. Half Kelly delivers (6.3 − 2.5)/(7.6 − 2.5) = **75% of the excess growth**, with much smaller drawdowns.
-- The real S&P trader lands at the 8th–49th percentile of simulated careers: typical, and for martingale and flat betting, unlucky.
+- **Merton − GBM:** +0.189 per day on Nifty (95% block-bootstrap CI +0.038 to +0.467) and +0.149 on the
+  S&P (+0.051 to +0.283). Merton wins on 72 to 76% of days, and most of the total comes from crises
+  (2020 on Nifty; 2008 and 2020 on the S&P).
+- **What remains is clustering:** both models fail Ljung–Box and ARCH-LM by a wide margin. Merton's
+  "jumps" bunch in stormy years (half of Nifty's test-period jumps fall in 2020), so it approximates
+  clustering by adding fat tails, not by changing volatility over time.
+- **The random walk is not scored:** its daily return takes only the values ±dx, so any real return has
+  zero probability.
+- **Window length** (training period only): 5 years scores best for both models on both markets
+  (3 and 7 years are lower), so the 5-year window was not tuned on test data.
 
-**Nifty (f\* = 0.59, so Kelly is conservative):** every strategy earns roughly 7% a year in the simulated worlds, and Half Kelly has the smallest drawdowns (9%). Martingale has the **highest median** wealth (163) but a 7–8% chance of losing half. Over 100 rounds its median drawdown is 84%, with a 95% chance of a drawdown above 50%: steady small gains, then a cluster of losses. The real 2017–2025 trader lands at the **88th–99th percentile** for every strategy. The test period was far better than training data suggested, and **Buy & Hold won (₹285, 15.5% CAGR)**.
+Figures: [q2_loglik](plots/q2_loglik_nifty.png), [q2_qq](plots/q2_qq_nifty.png), [q2_clustering](plots/q2_clustering_nifty.png) (and `_spx`)
 
-- **Hypothesis check:** Full Kelly highest median ✔. Severe drawdowns when Kelly means leverage ✔ (in every world, not just jump worlds). Half Kelly about 75% of the growth with far less risk ✔. Martingale "near-total bankruptcy" ✘: the 3× cap and −10% stops prevent it, though its long-run drawdowns are the worst of the six.
+## Q3: Do the models predict the barrier trade? **Better than no model; not distinguishable from each other.**
 
-Figures: [plots/q6_tournament_nifty.png](plots/q6_tournament_nifty.png), [plots/q6_tournament_spx.png](plots/q6_tournament_spx.png)
+For every start day with a full 504-day window (1,716 Nifty, 7,550 S&P), the month's rolling fit gives an
+exact capped forecast. Scores are averaged over start days with 252-day block-bootstrap CIs (start days
+overlap). The no-model baseline uses outcome frequencies of past start days that had already resolved.
 
-## Q7: What if the trader misjudges the drift? **Overestimating is costly; Half Kelly and the leverage cap protect against it.**
-
-The trader assumes drift = c × true drift and bets the Kelly fraction implied by that belief. 1,000 careers of 100 rounds each.
-
-| | Believed f* at c = 2 (true f*) | Full Kelly growth/yr, P(lose half) | Half Kelly growth/yr, P(lose half) | Cash |
+| | Nifty P(win) | Nifty log score vs no model | S&P P(win) | S&P log score vs no model |
 |---|---|---|---|---|
-| Nifty, GBM world | 2.29 (0.60) | **−1.5%, 47%** | +6.0%, 4% | +5.9% |
-| S&P, GBM world, 3× cap | 5.16 → capped at 3 (2.21) | +6.7%, 4% | +7.2%, 2% | +2.5% |
-| S&P, GBM world, no cap | 5.16 | **−3.1%, 60%** | +7.2%, 2% | |
-| S&P, Merton world, no cap | 5.16 | **−∞ (one jump can wipe out the trader), 64%** | +7.4%, 1.4% | |
+| Real | 57.5% | | 53.6% | |
+| Random walk | 60.4% | +0.045 [−0.18, +0.25] | 54.8% | +0.314 [+0.13, +0.52] |
+| GBM | 61.2% | +0.035 [−0.22, +0.26] | 55.2% | +0.324 [+0.13, +0.55] |
+| Merton | 62.1% | +0.042 [−0.22, +0.28] | 55.6% | **+0.331 [+0.13, +0.56]** |
 
-- **Doubling the drift more than doubles the bet.** Kelly depends on drift *minus the risk-free rate*, and 2μ − r_f > 2(μ − r_f). On Nifty, doubling the drift makes the trader bet 3.8× the true optimum, not 2×. So Half Kelly lands *above* the optimum rather than on it. That's still safe (about cash-level growth), but the hypothesis' "lands exactly on f\*" is wrong.
-- **The 3× leverage cap acts as a second safety net.** On the S&P it keeps an overconfident Full Kelly trader profitable.
-- **Underestimating the drift is cheap:** at c = 0.5–0.75 you give up some growth but never risk ruin.
+- **Models vs no model:** a clear gain on the S&P (30 years). On Nifty, 9 years of overlapping trades are
+  too few to separate anything.
+- **Models vs each other:** Merton − GBM is +0.007 per day on both markets, with CIs covering 0. Because
+  win rate is driven by drift and volatility, which all three share, the barrier trade cannot rank them.
+- **Calibration is weak:** months where the models predict a high P(win) do not win more often. That is
+  the 5-year drift estimate being noisy, not a fault of any one model.
+- **Exit timing:** the PIT histogram of the exit day has too much mass at both ends: real trades are more
+  often much faster or much slower than predicted (S&P: 5 to 6 of 10 bins outside their CI; Nifty: 1).
+  This is volatility clustering again: storms end trades fast, calm stretches drag them out.
+- **Stop-loss fills** (input to the betting game):
 
-Figures: [plots/q7_drift_error_nifty.png](plots/q7_drift_error_nifty.png), [plots/q7_drift_error_spx.png](plots/q7_drift_error_spx.png)
+  | | Nifty mean | Nifty 1% worst | S&P mean | S&P 1% worst |
+  |---|---|---|---|---|
+  | Real | −12.0% [−12.8, −11.0] | −17.3% | −11.4% [−12.0, −11.0] | −17.2% |
+  | Random walk | −10.0% | −10.5% | −10.0% | −10.6% |
+  | GBM | −10.6% | −12.1% | −10.7% | −12.6% |
+  | Merton | **−11.2%** | **−17.4%** | **−11.1%** | **−17.0%** |
+
+Figures: [q3_scores](plots/q3_scores_nifty.png), [q3_calibration](plots/q3_calibration_nifty.png), [q3_pit](plots/q3_pit_nifty.png), [q3_stopfill](plots/q3_stopfill_nifty.png) (and `_spx`)
+
+## Q4: What bet size does each model recommend? **About 2× on average, but it swings wildly.**
+
+Per monthly fit, Kelly maximises expected log growth of one round, with cash earning r_f, borrowing at
+r_f + 1%, and 0.10% trading cost each way.
+
+| | Nifty GBM | Nifty Merton | S&P GBM | S&P Merton |
+|---|---|---|---|---|
+| f\* mean (range) | 2.24 (0 – 4.2) | 2.16 (0 – 3.5) | 2.52 (0 – 5.6) | 2.27 (0 – 4.8) |
+| Months with f\* > 3× cap | 18% | 17% | 44% | 43% |
+| Months with f\* = 0 | 3% | 3% | 22% | 22% |
+| Half-Kelly share of excess growth | 76% | 76% | 75% | 75% |
+| Cash break-even / f\* | 1.73 | 1.36 | 1.59 | 1.22 |
+| Ruin cliff (1-in-a-million loss wipes out) | 7.0× | **3.5×** | 7.0× | **4.3×** |
+
+- **Drift uncertainty dominates:** ±1 standard error of the 5-year drift moves GBM's f\* by 3.5 (Nifty)
+  and 2.8 (S&P) on average. The S&P series swings between 0 (2002–2006, 2008–2012) and above 5.
+- **Merton bets less** and has an earlier break-even and cliff, because its jumps make big stop-loss gaps
+  possible. With the real fills swapped in, GBM's f\* falls from 2.24 to 1.85 on Nifty.
+- **Half Kelly keeps about 75% of the excess growth** for half the leverage, the same as the textbook
+  result, in every model and market.
+- The Q5 traders read f\* from a lookup table. It matches direct computation within 0.23 (Nifty) and
+  0.08 (S&P) inside the 3× cap.
+
+Figures: [q4_growth](plots/q4_growth_nifty.png), [q4_fstar_series](plots/q4_fstar_series_nifty.png) (and `_spx`)
+
+## Q5: Which betting strategy wins? **Bet less than Kelly; Merton Half Kelly is the best model-based rule.**
+
+**Design.** A career is one continuous daily price path: 5 years of visible history, then 100 back-to-back
+trades. Before each trade the trader refits on the path's own last 5 years and every strategy sets its
+bet (capped at 3×). Wealth is marked to market daily; levered positions face a margin call (equity below
+25% of the position) and bankruptcy is absorbing. 2,000 careers per world, the same paths for every
+strategy. Worlds:
+
+- **Random walk, GBM, Merton:** fixed true parameters from the full history, never shown to the trader.
+- **Bootstrap (headline):** real daily returns resampled in blocks averaging 3 months, which keeps real
+  crashes, fat tails and clustering.
+- **Real path:** the actual test period from 60 start offsets (12 trades on Nifty, 48 on the S&P).
+
+**Bootstrap world after 100 rounds** (mean log growth per year; difference vs GBM Half Kelly, 95% CI):
+
+| Strategy | Nifty growth | vs Half Kelly | Nifty median MDD | S&P growth | vs Half Kelly | S&P median MDD |
+|---|---|---|---|---|---|---|
+| Buy & hold | 9.8% | +1.98% | 61% | 7.0% | +2.13% | 54% |
+| Fixed 50% | 8.2% | +0.34% | 31% | 4.8% | −0.13% | 30% |
+| **Merton Half Kelly** | **8.0%** | **+0.18%** | 56% | **5.1%** | **+0.20%** | 65% |
+| GBM Half Kelly | 7.8% | 0 | 64% | 4.9% | 0 | 73% |
+| Drawdown-controlled Half Kelly | 7.9% | +0.06% | 51% | 4.6% | −0.31% | 59% |
+| Vol-targeted Half Kelly | 7.6% | −0.21% | 65% | 4.7% | −0.19% | 74% |
+| Empirical Half Kelly | 7.3% | −0.48% | 75% | 4.3% | −0.60% | 77% |
+| Martingale | 7.1% | −0.76% | 74% | 4.1% | −0.81% | 69% |
+| GBM Kelly | 6.2% | −1.66% | 86% | 4.3% | −0.58% | 89% |
+| Merton Kelly | 6.3% | −1.55% | 86% | 4.3% | −0.58% | 89% |
+| Empirical Kelly | 5.9% | −1.92% | 89% | 3.9% | −0.99% | 89% |
+| GBM 2× Kelly | 4.8% | −3.01% | 93% | 3.9% | −1.03% | 94% |
+| Shrinkage Kelly | 6.6% | −1.25% | 74% | 3.5% | −1.40% | 79% |
+| Flat 50 | 6.5% | −1.28% | 15% | 3.3% | −1.59% | 15% |
+
+(Cash: 5.8% Nifty, 2.5% S&P in log terms. Every 95% CI half-width is 0.15 points or less, so differences
+of about 0.2 points or more are real. No strategy goes bankrupt: the 3× cap and the −10% stop prevent it.)
+
+- **Estimation noise is the main cost.** In the model worlds the trader's f\* is between 0 and about 3.3×
+  the true f\* (10th to 90th percentile). That costs Full Kelly 3.5%/yr on Nifty and 2.3%/yr on the S&P,
+  and Half Kelly 1.7 to 2.1%/yr ([q5_misestimation](plots/q5_misestimation_nifty.png)). The Kelly frontier
+  bends backwards past 0.5×: more leverage gives less growth and deeper drawdowns
+  ([q5_frontier](plots/q5_frontier_nifty.png)).
+- **Buy & hold wins** because it holds about the right exposure (f = 1, close to the true f\* of 1.1 on
+  Nifty) without estimation noise, costs or exits. **Fixed 50%** wins on Nifty for the same reason. Any
+  strategy that leans on the 5-year drift estimate pays for its noise.
+- **Merton beats GBM as a sizing tool** (Half Kelly, every world, CIs excluding 0), because it bets less
+  when jumps make stops gap. **Models beat no model:** empirical Kelly trails model Kelly in every world.
+- **The robust add-ons mostly don't help.** Vol targeting at 60 days loses about 0.2%/yr. Drawdown control
+  cuts drawdowns but improves growth only in the Nifty bootstrap world (+0.06%). Positive-part shrinkage pulls the drift to the cash rate so
+  often that it sits in cash and loses 1.3%/yr.
+- **Martingale** is worse than Half Kelly in every world and lands at the 23rd percentile on the real S&P
+  path. **Anti-martingale** does well in the bootstrap world (+0.18% Nifty) but finishes at the 11th
+  percentile on the real S&P.
+- **Do the worlds agree?** Mostly. The GBM and Merton worlds rank strategies like the bootstrap world
+  ([q5_worlds](plots/q5_worlds_nifty.png)), so the models are good enough to *compare* strategies. The
+  bootstrap world has higher drawdowns (Nifty buy & hold: P(drawdown > 50%) 88% vs 65 to 68% in the
+  model worlds), which is the cost of the missing clustering.
+- **Real path.** On Nifty (12 trades, 2017–2025) every strategy lands at the 60th to 76th percentile of
+  bootstrap careers, a good decade. On the S&P (48 trades) GBM, Merton and drawdown-controlled Half Kelly
+  sit at the 62nd to 72nd percentile (vol-targeted Half Kelly at the 46th), while Full Kelly and above land
+  at the 25th to 31st percentile with 95 to 99% drawdowns.
+
+Figures: [q5_leaderboard](plots/q5_leaderboard_nifty.png), [q5_worlds](plots/q5_worlds_nifty.png), [q5_frontier](plots/q5_frontier_nifty.png), [q5_misestimation](plots/q5_misestimation_nifty.png) (and `_spx`)
 
 ---
 
-## Limitations
+## Caveats
 
-- **Small Nifty sample.** Only 12 independent trades (11–12 depending on start day; win rate 58%–67%). On Nifty alone, only gross model failures can be detected; the S&P (48 trades) carries the statistical weight.
-- **Merton's "jumps" are mostly crisis clusters** (2008, 2020, 1987), not isolated shocks. The model spreads them evenly through time.
-- **Cash and costs:** constant risk-free rate, borrowing at the same rate, no transaction costs or taxes. The indices are price indices, so dividends (about 1.3%/yr) are missing from every strategy, including Buy & Hold.
-- **Real-world tournament:** one historical path per market. It is reported as "what happened to one trader" and placed in context with percentiles. The trader's Kelly comes from the training GBM.
-- **Data:** S&P Open prices are placeholders before about 2006, so S&P gap fills before then default to the barrier. Annualization uses 252 days/year; results in *days* don't depend on this.
-- **Martingale rule for timeouts:** the bet fraction is left unchanged after a timeout (the plan didn't specify this case).
+- **Nifty's test sample is short:** 9 years, 1,716 overlapping start days (about 4 to 5 independent
+  2-year windows) and only 12 real trades. Most Nifty Q3 comparisons are inconclusive for that reason, and
+  both real paths are single histories, so they reflect luck as much as skill.
+- **The 5-year window drives the betting results.** It suits volatility (Q2 picks it), but its drift
+  estimate is uncertain by about ±7 to 8%/yr, and that noise is behind "Full Kelly loses" and much of
+  "buy & hold wins". Estimating drift on all past data (an expanding window) while keeping volatility on
+  5 years might shrink those gaps. That is untested, and the model and bootstrap worlds would favour it by
+  construction (their long-run drift is constant), so the real path is its fair test.
+- **Merton's Kelly table fixes the jump sizes** at their training-period estimate. Only drift, volatility
+  and jump rate are re-estimated each round.
+- **Kelly ignores outcomes with probability below 10⁻⁹ per trade.** Otherwise the open-ended overshoot
+  bin of the grid would set g = −∞ at moderate leverage. The ruin cliff is reported separately.
+- **Margin calls almost never bind:** at a 3× cap and 25% maintenance, they need a one-day gap worse
+  than about −11%; the −10% stop exits first otherwise.
+- **Model worlds use one fixed parameter set** (the full-history fit), so they contain no regime change;
+  the bootstrap world contains only crashes already seen in history.
+- **The cash rate is constant** (6.0% / 2.5%) and the borrowing spread, costs and margin rule are
+  assumptions in `barrier/config.py`.
+- **Not tested yet:** GARCH(1,1) with Student-t errors. A prototype beat both GBM and Merton on Q2's
+  likelihood (+0.28 / +0.30 per day vs GBM) and removed most clustering (see `PLAN.md`, "Later").
 
-## Changes from the original plan
+## How to run
 
-- Corrected the random-walk win-probability formula, and matched the lattice to both mean *and* variance.
-- Time cap of 504 days instead of 252. With 252, 21–26% of test-period Nifty trades and about 40% of S&P training forecasts would have timed out.
-- The Kelly fraction includes the risk-free rate (cash earns it, borrowing pays it), overshoot and timeouts. It is computed by maximizing expected log growth over the simulated trades.
-- Tournament careers match the real chain length (12 / 48 rounds) instead of 25, plus a 100-round long-run view.
-- Added the S&P 500 as a validation dataset, the oracle comparison, chain start-day robustness, and Open-price gap fills.
-
-## How to reproduce (about 5 minutes in total)
-
+```bash
+.venv/Scripts/python run_calibrate.py      # data checks + monthly rolling fits
+.venv/Scripts/python run_q1_theory.py      # ~1 min
+.venv/Scripts/python run_q2_returns.py     # ~15 s
+.venv/Scripts/python run_q3_barriers.py    # ~4 min first time (caches forecasts)
+.venv/Scripts/python run_q4_kelly.py       # ~8 min first time (caches Kelly tables)
+.venv/Scripts/python run_q5_tournament.py  # ~15 min (8 worlds in parallel)
+.venv/Scripts/python run_tables.py
+.venv/Scripts/python -m pytest -q tests
 ```
-python -m venv .venv && .venv/Scripts/python -m pip install -r requirements.txt
-.venv/Scripts/python run_models.py           # Step 1-2: data, calibration, closed forms
-.venv/Scripts/python run_engine_a.py         # Q1 + model predictions (~15 s)
-.venv/Scripts/python run_step3_real.py       # Q2-Q4 real-data scoring (~10 s)
-.venv/Scripts/python run_step4_tournament.py # Q5-Q7 (~4 min)
-.venv/Scripts/python run_step5_tables.py     # TABLES.md
-```
-Fixed seeds make every number reproducible. Assumptions (dates, risk-free rates, cap, leverage) live in `barrier/config.py`.
+
+To change only the look of a plot, `run_q1_theory.py plots`, `run_q4_kelly.py plots` and
+`run_q5_tournament.py plots` redraw from the saved JSON in seconds; Q2 and Q3 rerun in under a minute
+from the caches.
